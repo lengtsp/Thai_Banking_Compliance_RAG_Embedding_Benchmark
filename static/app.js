@@ -1,5 +1,5 @@
 /* ============================================
-   RAG Embedding Comparison — app.js
+   Thai Banking Compliance Embedding Benchmarkn — app.js
    Chat-style UI with Tabs & Override support
    ============================================ */
 
@@ -9,6 +9,14 @@ let selectedFiles = [];
 const STEP_ORDER = ['upload', 'chunk', 'embed', 'rag', 'evaluate', 'wer'];
 let pipelineState = {};
 STEP_ORDER.forEach(s => pipelineState[s] = 'idle');
+
+// Embedding model definitions (must match backend EMBEDDING_MODELS order)
+const EMBEDDING_MODELS = [
+  { key: '06b',   label: '🩵 0.6B',   color: '#0891b2', bg: '#ecfeff', border: '#a5f3fc' },
+  { key: '4b',    label: '🔵 4B',     color: '#6366f1', bg: '#eef2ff', border: '#c7d2fe' },
+  { key: '8b',    label: '🟣 8B',     color: '#a855f7', bg: '#faf5ff', border: '#e9d5ff' },
+  { key: 'bgem3', label: '🟠 BGE-M3', color: '#ea580c', bg: '#fff7ed', border: '#fed7aa' },
+];
 
 // ===== Init =====
 document.addEventListener('DOMContentLoaded', () => {
@@ -87,14 +95,46 @@ async function loadSessions() {
 function onSessionChange(val) {
   currentSessionId = val ? parseInt(val) : null;
   const badge = document.getElementById('sessionBadge');
+  const deleteBtn = document.getElementById('deleteSessionBtn');
   if (currentSessionId) {
     badge.textContent = `Session #${currentSessionId}`;
     badge.className = 'px-2.5 py-1 rounded-full text-[10px] font-semibold bg-indigo-50 text-indigo-600 border border-indigo-200';
+    if (deleteBtn) deleteBtn.classList.remove('hidden');
     syncTimelineWithSession();
   } else {
     badge.textContent = 'No Session';
     badge.className = 'px-2.5 py-1 rounded-full text-[10px] font-semibold bg-gray-100 text-gray-500 border border-gray-200';
+    if (deleteBtn) deleteBtn.classList.add('hidden');
     resetTimeline();
+  }
+}
+
+async function deleteCurrentSession() {
+  if (!currentSessionId) return;
+  if (!confirm(`ลบ Session #${currentSessionId} และไฟล์ทั้งหมดหรือไม่?\n\nการกระทำนี้ไม่สามารถย้อนกลับได้`)) return;
+
+  const btn = document.getElementById('deleteSessionBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ กำลังลบ...';
+
+  try {
+    const res = await fetch(`/api/sessions/${currentSessionId}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.status !== 'success') throw new Error(data.message);
+    log(`✅ ลบ Session #${currentSessionId} สำเร็จ`);
+    currentSessionId = null;
+    await loadSessions();
+    // Reset UI
+    document.getElementById('sessionSelect').value = '';
+    onSessionChange('');
+    document.getElementById('tab-rag').innerHTML = '<div class="text-center py-20 text-gray-600"><div class="text-5xl mb-4 opacity-20">📊</div><p class="text-sm">ยังไม่มีผลลัพธ์ — กรุณาอัปโหลด PDF และรัน Pipeline</p></div>';
+    document.getElementById('tab-eval').innerHTML = '<div class="text-center py-20 text-gray-600"><div class="text-5xl mb-4 opacity-20">📝</div><p class="text-sm">ยังไม่มีผลการประเมิน</p></div>';
+    document.getElementById('tab-wer').innerHTML = '<div class="text-center py-20 text-gray-600"><div class="text-5xl mb-4 opacity-20">📐</div><p class="text-sm">ยังไม่มีผล WER</p></div>';
+  } catch (e) {
+    log(`❌ ลบ Session ไม่สำเร็จ: ${e.message}`);
+    alert(`ลบไม่สำเร็จ: ${e.message}`);
+    btn.disabled = false;
+    btn.textContent = '🗑️ ลบ Session';
   }
 }
 
@@ -442,9 +482,12 @@ async function loadSessionResults(sessionId) {
     }
     if (data.eval_summary?.length > 0) {
       displayEvalResults(data.eval_summary);
-      const avg4b = (data.eval_summary.reduce((s, e) => s + (e.score_4b || 0), 0) / data.eval_summary.length).toFixed(1);
-      const avg8b = (data.eval_summary.reduce((s, e) => s + (e.score_8b || 0), 0) / data.eval_summary.length).toFixed(1);
-      loaded.push(`Eval avg: 4B=${avg4b} 8B=${avg8b}`);
+      const avgParts = EMBEDDING_MODELS.map(m => {
+        const vals = data.eval_summary.filter(e => e.scores?.[m.key] != null);
+        const avg  = vals.length ? (vals.reduce((s, e) => s + e.scores[m.key], 0) / vals.length).toFixed(1) : '-';
+        return `${m.label}=${avg}`;
+      });
+      loaded.push(`Eval avg: ${avgParts.join(' ')}`);
     }
     if (data.wer_results?.length > 0) {
       displayWERResults(data.wer_results);
@@ -556,8 +599,7 @@ async function runFullPipeline() {
     if (!skipSteps.includes('embed')) {
       setStepState('embed', 'active', 'กำลัง embed...');
       const chunkType = document.getElementById('chunkType').value;
-      log(`🧮 [Step 3/6] กำลังสร้าง embeddings (${chunkType} chunks)...`);
-      log('   🔵 กำลัง embed ด้วย qwen3-embedding:4B...');
+      log(`🧮 [Step 3/6] กำลังสร้าง embeddings (${chunkType} chunks) — 4 models...`);
 
       const res = await fetch(`/api/embed/${currentSessionId}`, {
         method: 'POST',
@@ -566,8 +608,8 @@ async function runFullPipeline() {
       });
       const data = await res.json();
       if (data.status !== 'success') throw new Error(data.message);
-      log(`   🟣 Unload 4B → โหลด 8B...`);
-      log(`✅ Embedding สำเร็จ — total: ${data.total_chunks} chunks | 4B: ${data.embeddings_4b} | 8B: ${data.embeddings_8b}`);
+      const embParts = EMBEDDING_MODELS.map(m => `${m.label}: ${data[`embeddings_${m.key}`] ?? '?'}`).join(' | ');
+      log(`✅ Embedding สำเร็จ — total: ${data.total_chunks} chunks | ${embParts}`);
       setStepState('embed', 'done', '✓ เสร็จแล้ว');
     }
 
@@ -589,8 +631,8 @@ async function runFullPipeline() {
     if (!skipSteps.includes('rag')) {
       setStepState('rag', 'active', 'กำลัง RAG...');
       const chunkType = document.getElementById('chunkType').value;
-      const topK = parseInt(document.getElementById('topKInput').value) || 5;
-      log(`🚀 [Step 4/6] เริ่ม RAG pipeline (${chunkType} chunks, top_k=${topK}, 4B → 8B)...`);
+      const topK = parseInt(document.getElementById('topKInput').value) || 3;
+      log(`🚀 [Step 4/6] เริ่ม RAG pipeline (${chunkType} chunks, top_k=${topK}, 4 models)...`);
 
       const res = await fetch(`/api/rag/${currentSessionId}`, {
         method: 'POST',
@@ -617,10 +659,9 @@ async function runFullPipeline() {
       });
       const data = await res.json();
       if (data.status !== 'success') throw new Error(data.message);
-      const scores = data.evaluations?.map(e => `${e.question_number}: 4B=${e.score_4b ?? '-'} 8B=${e.score_8b ?? '-'}`).join(', ') || '';
       log(`✅ Evaluation สำเร็จ (${data.evaluations?.length ?? 0} ข้อ)`);
-      if (scores) log(`   📊 Scores — ${scores}`);
-      displayEvalResults(data.evaluations);
+      // Normalize flat score_* fields + answers_by_model → scores / answers format
+      displayEvalResults(normalizeEvalData(data.evaluations));
       setStepState('evaluate', 'done', '✓ เสร็จแล้ว');
     }
 
@@ -692,60 +733,68 @@ function escapeHtml(text) {
 function displayRAGResults(results) {
   const container = document.getElementById('tab-rag');
   let html = '';
+
+  function buildChunksHtml(chunks) {
+    if (!chunks || chunks.length === 0) return '<span class="text-xs text-gray-400">ไม่มีข้อมูล</span>';
+    const hasSim = chunks.some(c => c.similarity > 0);
+    return chunks.map((c, idx) => {
+      const simBadge = hasSim
+        ? (() => {
+            const sim   = (c.similarity * 100).toFixed(1);
+            const color = c.similarity >= 0.8 ? '#22c55e' : c.similarity >= 0.6 ? '#f59e0b' : '#ef4444';
+            return `<span class="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded" style="background:${color}18;color:${color}">${sim}%</span>`;
+          })()
+        : `<span class="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-400">#${idx + 1}</span>`;
+      const typeBadge = c.chunk_type === 'agentic'
+        ? `<span class="shrink-0 text-[9px] px-1.5 py-0.5 rounded font-semibold bg-orange-100 text-orange-600">agentic</span>`
+        : c.chunk_type === 'recursive'
+          ? `<span class="shrink-0 text-[9px] px-1.5 py-0.5 rounded font-semibold bg-indigo-100 text-indigo-600">recursive</span>`
+          : '';
+      return `<div class="flex items-start gap-2 py-1.5 border-b border-gray-100 last:border-0">
+        ${simBadge}${typeBadge}
+        <span class="text-[11px] text-gray-500 leading-relaxed">${escapeHtml(c.text)}</span>
+      </div>`;
+    }).join('');
+  }
+
   results.forEach(r => {
-    // Check if real similarity scores are available (not all zero)
-    const hasSim4b = r.chunks_4b?.some(c => c.similarity > 0);
-    const hasSim8b = r.chunks_8b?.some(c => c.similarity > 0);
+    const answers = r.answers || {};
+    const chunks  = r.chunks  || {};
 
-    function buildChunksHtml(chunks, hasSim) {
-      if (!chunks || chunks.length === 0) return '<span class="text-xs text-gray-600">ไม่มีข้อมูล</span>';
-      return chunks.map((c, idx) => {
-        const simBadge = hasSim
-          ? (() => {
-              const sim = (c.similarity * 100).toFixed(1);
-              const color = c.similarity >= 0.8 ? '#22c55e' : c.similarity >= 0.6 ? '#f59e0b' : '#ef4444';
-              return `<span class="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded" style="background:${color}18;color:${color}">${sim}%</span>`;
-            })()
-          : `<span class="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-400">#${idx + 1}</span>`;
-        const typeBadge = c.chunk_type === 'agentic'
-          ? `<span class="shrink-0 text-[9px] px-1.5 py-0.5 rounded font-semibold bg-orange-100 text-orange-600">agentic</span>`
-          : c.chunk_type === 'recursive'
-            ? `<span class="shrink-0 text-[9px] px-1.5 py-0.5 rounded font-semibold bg-indigo-100 text-indigo-600">recursive</span>`
-            : '';
-        return `<div class="flex items-start gap-2 py-1.5 border-b border-gray-100 last:border-0">
-          ${simBadge}${typeBadge}
-          <span class="text-[11px] text-gray-500 leading-relaxed">${escapeHtml(c.text)}</span>
-        </div>`;
-      }).join('');
-    }
+    // Build 2×2 answer grid
+    const answerGridHtml = EMBEDDING_MODELS.map(m => {
+      const cList   = chunks[m.key] || [];
+      const hasSim  = cList.some(c => c.similarity > 0);
+      const avgSim  = (hasSim && cList.length)
+        ? (cList.reduce((s, c) => s + c.similarity, 0) / cList.length * 100).toFixed(1)
+        : null;
+      return `<div class="model-answer" style="border-color:${m.border};background:${m.bg}">
+        <div class="label flex items-center justify-between" style="color:${m.color}">
+          <span>${m.label}</span>
+          ${avgSim != null
+            ? `<span class="text-[10px] font-normal opacity-70">avg sim: ${avgSim}%</span>`
+            : '<span class="text-[10px] font-normal opacity-40">sim: N/A</span>'}
+        </div>
+        <div class="text-gray-700 text-sm">${escapeHtml(answers[m.key] || '—')}</div>
+      </div>`;
+    }).join('');
 
-    const avg4b = (hasSim4b && r.chunks_4b?.length)
-      ? (r.chunks_4b.reduce((s, c) => s + c.similarity, 0) / r.chunks_4b.length * 100).toFixed(1)
-      : null;
-    const avg8b = (hasSim8b && r.chunks_8b?.length)
-      ? (r.chunks_8b.reduce((s, c) => s + c.similarity, 0) / r.chunks_8b.length * 100).toFixed(1)
-      : null;
+    // Build chunk columns (2×2 grid)
+    const chunkColsHtml = EMBEDDING_MODELS.map(m => {
+      const cList = chunks[m.key] || [];
+      return `<div class="bg-gray-50 rounded-lg p-3 border border-gray-100">
+        <div class="text-[10px] font-bold uppercase mb-2" style="color:${m.color}">${m.label} Chunks (${cList.length})</div>
+        ${buildChunksHtml(cList)}
+      </div>`;
+    }).join('');
 
     html += `
     <div class="result-card">
       <h3 class="text-sm font-semibold text-cyan-700 mb-1">ข้อที่ ${r.question_number}</h3>
       <p class="text-xs text-gray-500 mb-4">${escapeHtml(r.question_text)}</p>
 
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-3">
-        <div class="model-answer m4b">
-          <div class="label flex items-center justify-between">
-            <span>🔵 Embedding 4B</span>
-            ${avg4b != null ? `<span class="text-[10px] font-normal opacity-70">avg sim: ${avg4b}%</span>` : '<span class="text-[10px] font-normal opacity-40">sim: N/A</span>'}
-          </div>
-          <div class="text-gray-700 text-sm">${escapeHtml(r.answer_4b)}</div>
-        </div>
-        <div class="model-answer m8b">
-          <div class="label flex items-center justify-between">
-            <span>🟣 Embedding 8B</span>
-            ${avg8b != null ? `<span class="text-[10px] font-normal opacity-70">avg sim: ${avg8b}%</span>` : '<span class="text-[10px] font-normal opacity-40">sim: N/A</span>'}
-          </div>
-          <div class="text-gray-700 text-sm">${escapeHtml(r.answer_8b)}</div>
-        </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+        ${answerGridHtml}
       </div>
 
       <div class="model-answer golden mb-3">
@@ -757,20 +806,116 @@ function displayRAGResults(results) {
         <summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-700 transition-colors select-none">
           📎 ดู Retrieved Chunks พร้อม Similarity Scores
         </summary>
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-3">
-          <div class="bg-gray-50 rounded-lg p-3 border border-gray-100">
-            <div class="text-[10px] font-bold text-indigo-600 uppercase mb-2">🔵 4B Chunks (${r.chunks_4b?.length || 0})</div>
-            ${buildChunksHtml(r.chunks_4b, hasSim4b)}
-          </div>
-          <div class="bg-gray-50 rounded-lg p-3 border border-gray-100">
-            <div class="text-[10px] font-bold text-purple-600 uppercase mb-2">🟣 8B Chunks (${r.chunks_8b?.length || 0})</div>
-            ${buildChunksHtml(r.chunks_8b, hasSim8b)}
-          </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-3">
+          ${chunkColsHtml}
         </div>
       </details>
     </div>`;
   });
+
   container.innerHTML = html || '<div class="text-center py-20 text-gray-600"><p class="text-sm">ยังไม่มีผลลัพธ์</p></div>';
+}
+
+// ===== Normalize Eval Data from /api/evaluate (flat) → display format =====
+function normalizeEvalData(evals) {
+  if (!evals) return [];
+  return evals.map(e => ({
+    question_number: e.question_number,
+    question_text:   e.question_text   || '',
+    golden_answer:   e.golden_answer   || '',
+    answers:         e.answers_by_model || e.answers || {},
+    scores:          e.scores || Object.fromEntries(EMBEDDING_MODELS.map(m => [m.key, e[`score_${m.key}`] ?? null])),
+    evaluation_text: e.evaluation_text || '',
+    llm_prompts:     e.llm_prompts || {},
+    chunks:          e.chunks || {},
+  }));
+}
+
+// ===== Build Chunk Comparison Table =====
+function buildChunkComparisonHtml(chunks) {
+  if (!chunks) return '';
+  const hasData = EMBEDDING_MODELS.some(m => (chunks[m.key] || []).length > 0);
+  if (!hasData) return '';
+
+  // Build map: chunk_text → { text, models: {key: {rank, sim, type}} }
+  const chunkMap = new Map();
+  EMBEDDING_MODELS.forEach(m => {
+    (chunks[m.key] || []).forEach((c, idx) => {
+      const key = c.text.trim();
+      if (!chunkMap.has(key)) chunkMap.set(key, { text: c.text, models: {} });
+      chunkMap.get(key).models[m.key] = { rank: idx + 1, sim: c.similarity, type: c.chunk_type };
+    });
+  });
+
+  // Sort: most-shared first → then by best rank across models
+  const rows = Array.from(chunkMap.values()).sort((a, b) => {
+    const ca = Object.keys(a.models).length, cb = Object.keys(b.models).length;
+    if (cb !== ca) return cb - ca;
+    const minRank = r => Math.min(...Object.values(r.models).map(x => x.rank));
+    return minRank(a) - minRank(b);
+  });
+
+  const nAll  = rows.filter(r => Object.keys(r.models).length === 4).length;
+  const nSome = rows.filter(r => { const n = Object.keys(r.models).length; return n > 1 && n < 4; }).length;
+  const nUniq = rows.filter(r => Object.keys(r.models).length === 1).length;
+
+  const headerCols = EMBEDDING_MODELS.map(m =>
+    `<th class="text-center py-2 px-2 text-[10px] font-bold whitespace-nowrap" style="color:${m.color};min-width:58px">${m.label}</th>`
+  ).join('');
+
+  const tableRows = rows.map(row => {
+    const count = Object.keys(row.models).length;
+    const rowBg    = count === 4 ? '#f0fdf4' : count > 1 ? '#fefce8' : '#f9fafb';
+    const accentC  = count === 4 ? '#22c55e' : count > 1 ? '#f59e0b' : '#cbd5e1';
+    const badge = `<span class="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full border" style="background:${accentC}1a;color:${accentC};border-color:${accentC}50">${count}/4</span>`;
+    const preview = escapeHtml(row.text.slice(0, 100)) + (row.text.length > 100 ? '…' : '');
+
+    const cells = EMBEDDING_MODELS.map(m => {
+      const info = row.models[m.key];
+      if (!info) return `<td class="text-center py-2 px-2 text-gray-300 text-sm font-semibold">—</td>`;
+      const typeIcon = info.type === 'agentic' ? ' 🧠' : info.type === 'recursive' ? ' 📝' : '';
+      const simText = info.sim > 0
+        ? `<div class="text-[9px] opacity-55 font-normal">${(info.sim * 100).toFixed(0)}%</div>`
+        : '';
+      return `<td class="text-center py-2 px-2">
+        <div class="text-xs font-bold" style="color:${m.color}">#${info.rank}${typeIcon}</div>
+        ${simText}
+      </td>`;
+    }).join('');
+
+    return `<tr style="background:${rowBg};border-bottom:1px solid #f1f5f9">
+      <td class="py-2 pl-2 pr-3 text-[11px] text-gray-600 leading-relaxed" style="border-left:3px solid ${accentC}">
+        <div class="flex items-start gap-1.5">
+          ${badge}
+          <span class="break-words">${preview}</span>
+        </div>
+      </td>
+      ${cells}
+    </tr>`;
+  }).join('');
+
+  return `
+  <div class="mt-3 rounded-xl border border-gray-200 overflow-hidden">
+    <div class="flex items-center justify-between px-3 py-2 bg-slate-50 border-b border-gray-200">
+      <span class="text-[11px] font-bold text-gray-600">📊 Chunks ที่แต่ละ Model ดึงมา (เรียงตามความเหมือนกัน)</span>
+      <div class="flex gap-1.5 shrink-0 ml-3">
+        <span class="text-[9px] font-bold px-2 py-0.5 rounded-full bg-green-100 text-green-700">ตรงกัน 4/4: ${nAll}</span>
+        <span class="text-[9px] font-bold px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700">2–3/4: ${nSome}</span>
+        <span class="text-[9px] font-bold px-2 py-0.5 rounded-full bg-gray-200 text-gray-500">1/4: ${nUniq}</span>
+      </div>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-xs">
+        <thead>
+          <tr class="bg-white border-b border-gray-100">
+            <th class="text-left py-2 px-2 text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Chunk (ย่อ 100 ตัวอักษร)</th>
+            ${headerCols}
+          </tr>
+        </thead>
+        <tbody>${tableRows}</tbody>
+      </table>
+    </div>
+  </div>`;
 }
 
 // ===== Display Eval Results =====
@@ -781,14 +926,6 @@ function displayEvalResults(results) {
     return;
   }
 
-  // Summary averages
-  const v4 = results.filter(r => r.score_4b != null);
-  const v8 = results.filter(r => r.score_8b != null);
-  const avg4b = v4.length ? (v4.reduce((s, r) => s + r.score_4b, 0) / v4.length).toFixed(1) : '-';
-  const avg8b = v8.length ? (v8.reduce((s, r) => s + r.score_8b, 0) / v8.length).toFixed(1) : '-';
-  const win4b = results.filter(r => r.score_4b != null && r.score_8b != null && r.score_4b > r.score_8b).length;
-  const win8b = results.filter(r => r.score_4b != null && r.score_8b != null && r.score_8b > r.score_4b).length;
-
   function scoreColor(s) {
     if (s == null) return '#94a3b8';
     return s >= 70 ? '#22c55e' : s >= 40 ? '#f59e0b' : '#ef4444';
@@ -798,84 +935,97 @@ function displayEvalResults(results) {
     return s >= 70 ? 'ดีมาก' : s >= 40 ? 'พอใช้' : 'ต้องปรับปรุง';
   }
 
+  // Summary stats per model
+  const summaryStatsHtml = EMBEDDING_MODELS.map(m => {
+    const vals = results.filter(r => r.scores?.[m.key] != null);
+    const avg  = vals.length ? (vals.reduce((s, r) => s + r.scores[m.key], 0) / vals.length).toFixed(1) : '-';
+    const wins = results.filter(r => {
+      const myScore = r.scores?.[m.key] ?? -1;
+      return EMBEDDING_MODELS.every(o => o.key === m.key || (r.scores?.[o.key] ?? -1) <= myScore)
+        && vals.find(v => v.question_number === r.question_number);
+    }).length;
+    return `<div class="stat-item">
+      <div class="value" style="color:${m.color}">${avg}</div>
+      <div class="stat-label">${m.label}<br><span class="text-[9px]">avg /100</span></div>
+    </div>`;
+  }).join('');
+
   let html = `
-  <!-- Legend -->
   <div class="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-4 text-xs text-blue-900">
     <div class="font-bold mb-2">📊 คะแนนการประเมิน (0–100 คะแนน) — ประเมินโดย LLM เปรียบเทียบกับ Golden Answer</div>
     <div class="flex flex-wrap gap-x-5 gap-y-1">
-      <span><span class="font-bold text-green-600">70–100</span> = ดีมาก: คำตอบถูกต้อง ครบถ้วน ตรงประเด็น</span>
-      <span><span class="font-bold text-yellow-600">40–69</span> = พอใช้: ถูกบางส่วน อาจขาดรายละเอียด</span>
-      <span><span class="font-bold text-red-500">&lt;40</span> = ต้องปรับปรุง: ผิดหรือไม่ครบ</span>
+      <span><span class="font-bold text-green-600">70–100</span> = ดีมาก</span>
+      <span><span class="font-bold text-yellow-600">40–69</span> = พอใช้</span>
+      <span><span class="font-bold text-red-500">&lt;40</span> = ต้องปรับปรุง</span>
     </div>
   </div>
-  <!-- Summary stats -->
   <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
-    <div class="stat-item">
-      <div class="value" style="color:#6366f1">${avg4b}</div>
-      <div class="stat-label">คะแนนเฉลี่ย 4B<br><span class="text-[9px]">(จาก 100 คะแนน)</span></div>
-    </div>
-    <div class="stat-item">
-      <div class="value" style="color:#a855f7">${avg8b}</div>
-      <div class="stat-label">คะแนนเฉลี่ย 8B<br><span class="text-[9px]">(จาก 100 คะแนน)</span></div>
-    </div>
-    <div class="stat-item">
-      <div class="value" style="color:#6366f1">${win4b}</div>
-      <div class="stat-label">ข้อที่ 4B ชนะ</div>
-    </div>
-    <div class="stat-item">
-      <div class="value" style="color:#a855f7">${win8b}</div>
-      <div class="stat-label">ข้อที่ 8B ชนะ</div>
-    </div>
+    ${summaryStatsHtml}
   </div>`;
 
   results.forEach(r => {
-    const s4b = r.score_4b ?? null;
-    const s8b = r.score_8b ?? null;
-    const c4b = scoreColor(s4b), c8b = scoreColor(s8b);
-    const l4b = scoreLabel(s4b), l8b = scoreLabel(s8b);
-    const winner = (s4b != null && s8b != null)
-      ? (s4b > s8b ? '🔵 4B ดีกว่า' : s4b < s8b ? '🟣 8B ดีกว่า' : '🟰 เท่ากัน') : '';
+    const scores   = r.scores   || {};
+    const answers  = r.answers  || {};
+    const prompts  = r.llm_prompts || {};
 
-    const hasAnswers = r.answer_4b || r.answer_8b || r.golden_answer;
+    // Find winner (highest score)
+    const validModels = EMBEDDING_MODELS.filter(m => scores[m.key] != null);
+    const maxScore    = validModels.length ? Math.max(...validModels.map(m => scores[m.key])) : null;
+    const winners     = validModels.filter(m => scores[m.key] === maxScore);
+    const winnerText  = maxScore == null ? '' :
+      winners.length === EMBEDDING_MODELS.length ? '🟰 เท่ากันทุกโมเดล' :
+      winners.length > 1 ? `🏆 ${winners.map(m => m.label).join(' & ')} ดีที่สุด` :
+      `🏆 ${winners[0].label} ดีที่สุด`;
+
+    // Score boxes (2×2 grid)
+    const scoreBoxesHtml = EMBEDDING_MODELS.map(m => {
+      const s = scores[m.key] ?? null;
+      const c = scoreColor(s);
+      return `<div class="score-box flex-col items-start" style="background:${c}18;color:${c}">
+        <div class="text-[11px]">${m.label}</div>
+        <div class="text-lg font-black mt-0.5">${s ?? '—'}<span class="text-xs font-normal opacity-60"> /100</span></div>
+        <div class="text-[10px] font-semibold mt-0.5">${scoreLabel(s)}</div>
+      </div>`;
+    }).join('');
+
+    // Answer comparison (4 + golden)
+    const answerColsHtml = EMBEDDING_MODELS.map(m =>
+      `<div class="model-answer" style="border-color:${m.border};background:${m.bg}">
+        <div class="label" style="color:${m.color}">${m.label}</div>
+        <div class="text-gray-700 text-xs leading-relaxed">${escapeHtml(answers[m.key] || '—')}</div>
+      </div>`
+    ).join('');
+
+    // Full prompts
+    const hasPrompts = Object.values(prompts).some(p => p);
+    const promptColsHtml = EMBEDDING_MODELS.map(m =>
+      `<div>
+        <div class="text-[10px] font-bold uppercase mb-1" style="color:${m.color}">${m.label} Full Prompt</div>
+        <pre class="text-[10px] text-gray-600 rounded-lg p-3 max-h-72 overflow-y-auto border whitespace-pre-wrap leading-relaxed" style="background:${m.bg};border-color:${m.border}">${escapeHtml(prompts[m.key] || '(ไม่มีข้อมูล)')}</pre>
+      </div>`
+    ).join('');
 
     html += `
     <div class="result-card">
       <div class="flex items-center justify-between mb-1">
         <h3 class="text-sm font-semibold text-gray-700">ข้อที่ ${r.question_number}</h3>
-        ${winner ? `<span class="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-gray-100 text-gray-600">${winner}</span>` : ''}
+        ${winnerText ? `<span class="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-gray-100 text-gray-600">${winnerText}</span>` : ''}
       </div>
       <p class="text-xs text-gray-500 mb-3">${escapeHtml(r.question_text || '')}</p>
 
-      <!-- Score boxes -->
-      <div class="flex items-center gap-3 mb-4">
-        <div class="score-box flex-col items-start" style="background:${c4b}18;color:${c4b}">
-          <div>🔵 Embedding 4B</div>
-          <div class="text-lg font-black mt-0.5">${s4b ?? '—'}<span class="text-xs font-normal opacity-60"> /100</span></div>
-          <div class="text-[10px] font-semibold mt-0.5">${l4b}</div>
-        </div>
-        <div class="score-box flex-col items-start" style="background:${c8b}18;color:${c8b}">
-          <div>🟣 Embedding 8B</div>
-          <div class="text-lg font-black mt-0.5">${s8b ?? '—'}<span class="text-xs font-normal opacity-60"> /100</span></div>
-          <div class="text-[10px] font-semibold mt-0.5">${l8b}</div>
-        </div>
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+        ${scoreBoxesHtml}
       </div>
 
-      <!-- 3-column answer comparison -->
-      ${hasAnswers ? `
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-3">
-        <div class="model-answer m4b">
-          <div class="label">🔵 คำตอบ 4B</div>
-          <div class="text-gray-700 text-xs leading-relaxed">${escapeHtml(r.answer_4b || '—')}</div>
-        </div>
-        <div class="model-answer m8b">
-          <div class="label">🟣 คำตอบ 8B</div>
-          <div class="text-gray-700 text-xs leading-relaxed">${escapeHtml(r.answer_8b || '—')}</div>
-        </div>
-        <div class="model-answer golden">
-          <div class="label">✅ เฉลย (Golden)</div>
-          <div class="text-gray-700 text-xs leading-relaxed">${escapeHtml(r.golden_answer || '—')}</div>
-        </div>
-      </div>` : ''}
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-2">
+        ${answerColsHtml}
+      </div>
+      <div class="model-answer golden mb-3">
+        <div class="label">✅ เฉลย (Golden)</div>
+        <div class="text-gray-700 text-xs leading-relaxed">${escapeHtml(r.golden_answer || '—')}</div>
+      </div>
+
+      ${buildChunkComparisonHtml(r.chunks || {})}
 
       ${r.evaluation_text ? `
       <details class="mt-1">
@@ -887,20 +1037,13 @@ function displayEvalResults(results) {
         </div>
       </details>` : ''}
 
-      ${(r.llm_prompt_4b || r.llm_prompt_8b) ? `
+      ${hasPrompts ? `
       <details class="mt-1">
         <summary class="text-xs text-gray-400 cursor-pointer hover:text-gray-600 transition-colors select-none">
-          🔍 ดู Full Prompt ที่ใช้ Inference (แยก 4B / 8B)
+          🔍 ดู Full Prompt ที่ใช้ Inference (แยกทุก Model)
         </summary>
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-2">
-          <div>
-            <div class="text-[10px] font-bold text-indigo-600 uppercase mb-1">🔵 Full Prompt — Embedding 4B</div>
-            <pre class="text-[10px] text-gray-600 bg-indigo-50 rounded-lg p-3 max-h-72 overflow-y-auto border border-indigo-100 whitespace-pre-wrap leading-relaxed">${escapeHtml(r.llm_prompt_4b || '(ไม่มีข้อมูล)')}</pre>
-          </div>
-          <div>
-            <div class="text-[10px] font-bold text-purple-600 uppercase mb-1">🟣 Full Prompt — Embedding 8B</div>
-            <pre class="text-[10px] text-gray-600 bg-purple-50 rounded-lg p-3 max-h-72 overflow-y-auto border border-purple-100 whitespace-pre-wrap leading-relaxed">${escapeHtml(r.llm_prompt_8b || '(ไม่มีข้อมูล)')}</pre>
-          </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-2">
+          ${promptColsHtml}
         </div>
       </details>` : ''}
     </div>`;

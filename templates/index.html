@@ -4,8 +4,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>RAG Embedding Comparison — 4B vs 8B</title>
-  <meta name="description" content="เปรียบเทียบคุณภาพ RAG ระหว่าง Embedding Model 4B และ 8B">
+  <title>Thai Banking Compliance Embedding Benchmark — 0.6B vs 4B vs 8B vs BGE-M3</title>
+  <meta name="description" content="เปรียบเทียบคุณภาพ RAG ระหว่าง Embedding Model 0.6B, 4B, 8B และ BGE-M3">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
     rel="stylesheet">
@@ -38,8 +38,8 @@
         <div>
           <h1
             class="text-base font-bold bg-gradient-to-r from-brand-blue via-brand-purple to-brand-pink bg-clip-text text-transparent leading-tight">
-            RAG Embedding Comparison</h1>
-          <p class="text-[10px] text-gray-500">qwen3-embedding 4B vs 8B</p>
+            Thai Banking Compliance Embedding Benchmark</h1>
+          <p class="text-[10px] text-gray-500">qwen3-embedding 0.6B / 4B / 8B vs BGE-M3</p>
         </div>
       </div>
       <div class="flex items-center gap-3">
@@ -47,6 +47,11 @@
           class="bg-white border border-gray-200 text-xs rounded-lg px-3 py-1.5 text-gray-700 focus:outline-none focus:ring-2 focus:ring-brand-blue/30 transition-all min-w-[180px] shadow-sm">
           <option value="">-- เลือก Session --</option>
         </select>
+        <button id="deleteSessionBtn" onclick="deleteCurrentSession()"
+          class="hidden px-3 py-1.5 rounded-lg bg-red-50 border border-red-200 text-red-600 text-xs font-semibold hover:bg-red-100 transition-all"
+          title="ลบ Session นี้และไฟล์ทั้งหมด">
+          🗑️ ลบ Session
+        </button>
         <span id="sessionBadge"
           class="px-2.5 py-1 rounded-full text-[10px] font-semibold bg-gray-100 text-gray-500 border border-gray-200">No
           Session</span>
@@ -271,7 +276,7 @@
     </div>
     <div id="logArea"
       class="flex-1 overflow-y-auto p-4 font-mono text-xs text-gray-500 custom-scrollbar leading-relaxed max-h-[calc(60vh-44px)]">
-      RAG Embedding Comparison — พร้อมใช้งาน
+      Thai Banking Compliance Embedding Benchmark — พร้อมใช้งาน
     </div>
   </div>
 
@@ -339,9 +344,11 @@
         <span class="font-bold">Placeholders ที่ต้องมีในทุก prompt:</span>
         <code class="ml-2 bg-white px-1.5 py-0.5 rounded border border-indigo-200">{question}</code>
         <code class="ml-1 bg-white px-1.5 py-0.5 rounded border border-indigo-200">{golden_answer}</code>
+        <code class="ml-1 bg-white px-1.5 py-0.5 rounded border border-indigo-200">{answer_06b}</code>
         <code class="ml-1 bg-white px-1.5 py-0.5 rounded border border-indigo-200">{answer_4b}</code>
         <code class="ml-1 bg-white px-1.5 py-0.5 rounded border border-indigo-200">{answer_8b}</code>
-        <span class="ml-3 text-indigo-600">— ต้องมี <code>SCORE_4B:</code> และ <code>SCORE_8B:</code> ใน output format</span>
+        <code class="ml-1 bg-white px-1.5 py-0.5 rounded border border-indigo-200">{answer_bgem3}</code>
+        <span class="ml-3 text-indigo-600">— ต้องมี <code>SCORE_06B:</code> <code>SCORE_4B:</code> <code>SCORE_8B:</code> <code>SCORE_BGEM3:</code> ใน output format</span>
       </div>
       <!-- Textarea -->
       <div class="flex-1 overflow-hidden p-4">

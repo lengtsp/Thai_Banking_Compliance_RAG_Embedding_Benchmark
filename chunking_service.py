@@ -4,6 +4,51 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from config import OLLAMA_BASE_URL, LLM_MODEL, RECURSIVE_CHUNK_SIZE, RECURSIVE_CHUNK_OVERLAP, llm_options
 
 
+def _sanitize_json_str(s: str) -> str:
+    """Escape raw control characters that appear inside JSON string values.
+
+    LLMs sometimes emit literal newlines/tabs inside JSON strings instead of
+    the escaped forms (\\n, \\t), which causes json.loads() to raise
+    'Invalid control character'.  This function fixes that by walking the
+    JSON character-by-character and replacing bare control chars with their
+    proper JSON escape sequences only when inside a string literal.
+    """
+    result = []
+    in_string = False
+    escape_next = False
+    for ch in s:
+        if escape_next:
+            result.append(ch)
+            escape_next = False
+        elif ch == "\\" and in_string:
+            result.append(ch)
+            escape_next = True
+        elif ch == '"':
+            in_string = not in_string
+            result.append(ch)
+        elif in_string and ord(ch) < 32:
+            # bare control character inside a JSON string → escape it
+            if ch == "\n":
+                result.append("\\n")
+            elif ch == "\r":
+                result.append("\\r")
+            elif ch == "\t":
+                result.append("\\t")
+            else:
+                result.append(f"\\u{ord(ch):04x}")
+        else:
+            result.append(ch)
+    return "".join(result)
+
+
+def _json_loads_safe(s: str):
+    """Parse JSON, retrying with control-character sanitisation on failure."""
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        return json.loads(_sanitize_json_str(s))
+
+
 def create_recursive_chunks(pages: list[dict]) -> list[dict]:
     """
     Create recursive character text chunks from OCR pages.
@@ -103,7 +148,7 @@ def create_agentic_chunks(pages: list[dict]) -> list[dict]:
             json_end = llm_response.rfind("]") + 1
             if json_start >= 0 and json_end > json_start:
                 json_str = llm_response[json_start:json_end]
-                chunks_data = json.loads(json_str)
+                chunks_data = _json_loads_safe(json_str)
             else:
                 # Fallback: treat entire page as one chunk
                 chunks_data = [{"title": f"หน้า {page_num}", "text": text}]

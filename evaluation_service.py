@@ -1,6 +1,7 @@
 import os
+import re
 import httpx
-from config import OLLAMA_BASE_URL, LLM_MODEL, llm_options
+from config import OLLAMA_BASE_URL, LLM_MODEL, EMBEDDING_MODELS, llm_options
 
 PROMPT_FILE = "evaluation_prompt.txt"
 
@@ -12,11 +13,17 @@ DEFAULT_EVALUATION_PROMPT = """คุณเป็นผู้ประเมิ�
 **เฉลย (Golden Answer) — ใช้เป็นเกณฑ์อ้างอิงใจความสำคัญ:**
 {golden_answer}
 
+**คำตอบจากโมเดล Embedding 0.6B:**
+{answer_06b}
+
 **คำตอบจากโมเดล Embedding 4B:**
 {answer_4b}
 
 **คำตอบจากโมเดล Embedding 8B:**
 {answer_8b}
+
+**คำตอบจากโมเดล Embedding BGE-M3:**
+{answer_bgem3}
 
 ---
 
@@ -41,6 +48,10 @@ DEFAULT_EVALUATION_PROMPT = """คุณเป็นผู้ประเมิ�
 
 ## การวิเคราะห์
 
+### โมเดล 0.6B
+- ใจความสำคัญที่ครบ: [ระบุจุดที่ตรงกับเฉลย]
+- ใจความที่ขาด/ผิด: [ระบุถ้ามี ถ้าไม่มีให้ระบุ "ไม่มี"]
+
 ### โมเดล 4B
 - ใจความสำคัญที่ครบ: [ระบุจุดที่ตรงกับเฉลย]
 - ใจความที่ขาด/ผิด: [ระบุถ้ามี ถ้าไม่มีให้ระบุ "ไม่มี"]
@@ -49,14 +60,26 @@ DEFAULT_EVALUATION_PROMPT = """คุณเป็นผู้ประเมิ�
 - ใจความสำคัญที่ครบ: [ระบุจุดที่ตรงกับเฉลย]
 - ใจความที่ขาด/ผิด: [ระบุถ้ามี ถ้าไม่มีให้ระบุ "ไม่มี"]
 
+### โมเดล BGE-M3
+- ใจความสำคัญที่ครบ: [ระบุจุดที่ตรงกับเฉลย]
+- ใจความที่ขาด/ผิด: [ระบุถ้ามี ถ้าไม่มีให้ระบุ "ไม่มี"]
+
 ### สรุป
 [สรุปการเปรียบเทียบ ว่าโมเดลใดให้คำตอบดีกว่าและเพราะเหตุใด]
 
 ---SCORES---
-SCORE_4B: [ตัวเลขเท่านั้น เช่น 75 ห้ามใส่ ** หรือ text อื่นในบรรทัดนี้]
+SCORE_06B: [ตัวเลขเท่านั้น เช่น 75 ห้ามใส่ ** หรือ text อื่นในบรรทัดนี้]
+SCORE_4B: [ตัวเลขเท่านั้น เช่น 80 ห้ามใส่ ** หรือ text อื่นในบรรทัดนี้]
 SCORE_8B: [ตัวเลขเท่านั้น เช่น 90 ห้ามใส่ ** หรือ text อื่นในบรรทัดนี้]
+SCORE_BGEM3: [ตัวเลขเท่านั้น เช่น 85 ห้ามใส่ ** หรือ text อื่นในบรรทัดนี้]
 
-หมายเหตุ: บรรทัด SCORE_4B และ SCORE_8B ต้องอยู่หลัง ---SCORES--- เท่านั้น ห้ามระบุคะแนนในส่วนการวิเคราะห์"""
+หมายเหตุ: บรรทัด SCORE_* ต้องอยู่หลัง ---SCORES--- เท่านั้น ห้ามระบุคะแนนในส่วนการวิเคราะห์"""
+
+# Required placeholders for prompt validation
+REQUIRED_PLACEHOLDERS = ["{question}", "{golden_answer}", "{answer_06b}", "{answer_4b}", "{answer_8b}", "{answer_bgem3}"]
+
+# Score labels to extract per model key
+_SCORE_LABELS = {key: f"SCORE_{key.upper()}" for key, _, _ in EMBEDDING_MODELS}
 
 
 def get_evaluation_prompt() -> str:
@@ -73,20 +96,31 @@ def get_evaluation_prompt() -> str:
 def evaluate_answer(
     question: str,
     golden_answer: str,
-    answer_4b: str,
-    answer_8b: str,
+    answers_by_model: dict,   # {model_key: answer_text}
 ) -> dict:
     """
-    Send both model answers + golden answer to LLM for comparative evaluation.
-    Returns {evaluation_text, score_4b, score_8b}.
+    Send all model answers + golden answer to LLM for comparative evaluation.
+    Returns {evaluation_text, score_06b, score_4b, score_8b, score_bgem3}.
     """
     prompt_template = get_evaluation_prompt()
-    prompt = prompt_template.format(
-        question=question,
-        golden_answer=golden_answer,
-        answer_4b=answer_4b,
-        answer_8b=answer_8b,
-    )
+
+    # Build format kwargs — fall back to "(ไม่มีคำตอบ)" for missing models
+    fmt_kwargs = {
+        "question":      question,
+        "golden_answer": golden_answer,
+        "answer_06b":    answers_by_model.get("06b",   "(ไม่มีคำตอบ)"),
+        "answer_4b":     answers_by_model.get("4b",    "(ไม่มีคำตอบ)"),
+        "answer_8b":     answers_by_model.get("8b",    "(ไม่มีคำตอบ)"),
+        "answer_bgem3":  answers_by_model.get("bgem3", "(ไม่มีคำตอบ)"),
+    }
+
+    try:
+        prompt = prompt_template.format(**fmt_kwargs)
+    except KeyError:
+        # Custom prompt may have fewer placeholders — format what we can
+        from string import Formatter
+        used_keys = {fname for _, fname, _, _ in Formatter().parse(prompt_template) if fname}
+        prompt = prompt_template.format(**{k: v for k, v in fmt_kwargs.items() if k in used_keys})
 
     print(f"\n{'─'*60}")
     print(f"📝 [Evaluation Prompt] → {LLM_MODEL}")
@@ -110,29 +144,21 @@ def evaluate_answer(
         evaluation_text = result.get("response", "").strip()
     print(f"💬 [Eval response preview]: {evaluation_text[:300]}\n")
 
-    # Try to parse scores from evaluation text
-    score_4b = _extract_score(evaluation_text, "SCORE_4B")
-    score_8b = _extract_score(evaluation_text, "SCORE_8B")
+    # Parse scores for all models
+    scores = {key: _extract_score(evaluation_text, label) for key, label in _SCORE_LABELS.items()}
 
-    return {
-        "evaluation_text": evaluation_text,
-        "score_4b": score_4b,
-        "score_8b": score_8b,
-    }
+    return {"evaluation_text": evaluation_text, **{f"score_{k}": v for k, v in scores.items()}}
 
 
 def _extract_score(text: str, label: str) -> float:
     """Extract numeric score from evaluation text."""
-    import re
     try:
         for line in text.split("\n"):
             if label in line:
-                # Strip markdown bold/italic markers before parsing (keep _ to preserve label)
                 clean_line = line.replace("**", "").replace("*", "")
                 parts = clean_line.split(label)
                 if len(parts) > 1:
                     num_str = parts[1].strip().strip(":").strip()
-                    # Get first number-like token (integer or decimal)
                     match = re.search(r'\d+(?:\.\d+)?', num_str)
                     if match:
                         return float(match.group())
@@ -142,7 +168,12 @@ def _extract_score(text: str, label: str) -> float:
 
 
 def evaluate_all(rag_results: list[dict]) -> list[dict]:
-    """Evaluate all RAG results against golden answers."""
+    """
+    Evaluate all RAG results against golden answers.
+
+    Each item in rag_results must have:
+        question_number, question_text, golden_answer, answers_by_model
+    """
     evaluations = []
     for r in rag_results:
         q_num = r["question_number"]
@@ -151,16 +182,14 @@ def evaluate_all(rag_results: list[dict]) -> list[dict]:
         eval_result = evaluate_answer(
             question=r["question_text"],
             golden_answer=r["golden_answer"],
-            answer_4b=r["result_4b"]["llm_answer"],
-            answer_8b=r["result_8b"]["llm_answer"],
+            answers_by_model=r["answers_by_model"],
         )
 
         evaluations.append({
-            "question_number": q_num,
-            "question_text": r["question_text"],
-            "golden_answer": r["golden_answer"],
-            "answer_4b": r["result_4b"]["llm_answer"],
-            "answer_8b": r["result_8b"]["llm_answer"],
+            "question_number":  q_num,
+            "question_text":    r["question_text"],
+            "golden_answer":    r["golden_answer"],
+            "answers_by_model": r["answers_by_model"],
             **eval_result,
         })
 

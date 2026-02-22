@@ -10,22 +10,52 @@ from fastapi.templating import Jinja2Templates
 from typing import Optional
 
 from config import (
-    APP_HOST, APP_PORT, UPLOAD_DIR, BEST_OCR_DIR, EMBEDDING_MODEL_4B, EMBEDDING_MODEL_8B,
-    LLM_TEMPERATURE, LLM_TOP_P, LLM_MAX_PREDICT, LLM_NUM_CTX, apply_llm_overrides,
+    APP_HOST, APP_PORT, UPLOAD_DIR, BEST_OCR_DIR,
+    EMBEDDING_MODELS,
+    EMBEDDING_MODEL_4B, EMBEDDING_MODEL_8B,
+    LLM_TEMPERATURE, LLM_TOP_P, LLM_MAX_PREDICT, LLM_NUM_CTX,
+    apply_llm_overrides,
 )
 from database import (
     init_db, SessionLocal, UploadSession, OcrPage,
-    RecursiveChunk, AgenticChunk, Embedding4b, Embedding8b,
+    RecursiveChunk, AgenticChunk,
+    ChunkEmbedding,
     Question, EvaluationResult, WerResult,
+    emb_to_db, emb_from_db,
 )
 from ocr_service import process_pdf
 from chunking_service import create_recursive_chunks, create_agentic_chunks
 from embedding_service import get_embeddings_batch, unload_model
 from rag_service import run_rag_pipeline
-from evaluation_service import evaluate_all, get_evaluation_prompt, DEFAULT_EVALUATION_PROMPT, PROMPT_FILE
+from evaluation_service import (
+    evaluate_all, get_evaluation_prompt,
+    DEFAULT_EVALUATION_PROMPT, PROMPT_FILE,
+    REQUIRED_PLACEHOLDERS,
+)
 from wer_service import compute_wer_for_session
 
-app = FastAPI(title="RAG Embedding Comparison")
+
+def _parse_retrieved_chunks(retrieved_chunks_json) -> list:
+    """Parse retrieved_chunks JSON string from EvaluationResult into list of dicts."""
+    if not retrieved_chunks_json:
+        return []
+    try:
+        raw = json.loads(retrieved_chunks_json)
+        result = []
+        for item in raw:
+            if isinstance(item, dict):
+                result.append({
+                    "text": item.get("text", ""),
+                    "similarity": item.get("sim", 0),
+                    "chunk_type": item.get("type", ""),
+                })
+            else:
+                result.append({"text": str(item), "similarity": 0, "chunk_type": ""})
+        return result
+    except Exception:
+        return []
+
+app = FastAPI(title="Thai Banking Compliance Embedding Benchmark")
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs("templates", exist_ok=True)
@@ -34,6 +64,14 @@ os.makedirs("static", exist_ok=True)
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads_files")
+
+# Mapping from model key → ChunkEmbedding column attribute name
+_MODEL_EMB_COL = {
+    "06b":   "embedding_06b",
+    "4b":    "embedding_4b",
+    "8b":    "embedding_8b",
+    "bgem3": "embedding_bgem3",
+}
 
 
 def _image_url(image_path: str) -> str:
@@ -47,6 +85,7 @@ def _image_url(image_path: str) -> str:
         return "/uploads/" + rel.replace(os.sep, "/")
     except Exception:
         return ""
+
 
 # Initialize DB on startup
 @app.on_event("startup")
@@ -72,15 +111,13 @@ async def upload_pdfs(files: list[UploadFile] = File(...), override_session_id: 
     try:
         for file in files:
             if override_session_id:
-                # Override: clear old data and reuse session
                 session = db.query(UploadSession).filter(UploadSession.id == override_session_id).first()
                 if session:
                     print(f"\n🔄 Override: clearing old data for session {override_session_id}")
                     db.query(OcrPage).filter(OcrPage.session_id == override_session_id).delete()
                     db.query(RecursiveChunk).filter(RecursiveChunk.session_id == override_session_id).delete()
                     db.query(AgenticChunk).filter(AgenticChunk.session_id == override_session_id).delete()
-                    db.query(Embedding4b).filter(Embedding4b.session_id == override_session_id).delete()
-                    db.query(Embedding8b).filter(Embedding8b.session_id == override_session_id).delete()
+                    db.query(ChunkEmbedding).filter(ChunkEmbedding.session_id == override_session_id).delete()
                     db.query(EvaluationResult).filter(EvaluationResult.session_id == override_session_id).delete()
                     db.query(Question).filter(Question.session_id == override_session_id).delete()
                     session.filename = file.filename
@@ -92,7 +129,6 @@ async def upload_pdfs(files: list[UploadFile] = File(...), override_session_id: 
                     db.commit()
                     db.refresh(session)
             else:
-                # New session
                 session = UploadSession(filename=file.filename, status="uploading")
                 db.add(session)
                 db.commit()
@@ -106,11 +142,9 @@ async def upload_pdfs(files: list[UploadFile] = File(...), override_session_id: 
                 content = await file.read()
                 f.write(content)
 
-            # Run OCR
             print(f"\n📄 Processing: {file.filename} (Session {session.id})")
             ocr_results = process_pdf(pdf_path, session.id)
 
-            # Store OCR results
             for page_result in ocr_results:
                 ocr_page = OcrPage(
                     session_id=session.id,
@@ -147,6 +181,43 @@ async def upload_pdfs(files: list[UploadFile] = File(...), override_session_id: 
         db.close()
 
 
+# ==================== Session Management ====================
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: int):
+    """Delete a session and all related records and uploaded files."""
+    db = SessionLocal()
+    try:
+        session = db.query(UploadSession).filter(UploadSession.id == session_id).first()
+        if not session:
+            return JSONResponse({"status": "error", "message": "Session not found"}, status_code=404)
+
+        print(f"\n🗑️  Deleting session {session_id} and all related data...")
+        db.query(OcrPage).filter(OcrPage.session_id == session_id).delete()
+        db.query(RecursiveChunk).filter(RecursiveChunk.session_id == session_id).delete()
+        db.query(AgenticChunk).filter(AgenticChunk.session_id == session_id).delete()
+        db.query(ChunkEmbedding).filter(ChunkEmbedding.session_id == session_id).delete()
+        db.query(Question).filter(Question.session_id == session_id).delete()
+        db.query(EvaluationResult).filter(EvaluationResult.session_id == session_id).delete()
+        db.query(WerResult).filter(WerResult.session_id == session_id).delete()
+        db.delete(session)
+        db.commit()
+
+        # Delete uploaded files
+        session_dir = os.path.join(UPLOAD_DIR, f"session_{session_id}")
+        if os.path.exists(session_dir):
+            shutil.rmtree(session_dir)
+            print(f"  🗂️  Deleted directory: {session_dir}")
+
+        return JSONResponse({"status": "success", "message": f"Session {session_id} deleted"})
+
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+    finally:
+        db.close()
+
+
 # ==================== Chunking ====================
 
 @app.post("/api/chunk/{session_id}")
@@ -166,13 +237,11 @@ async def create_chunks(session_id: int, request: Request):
 
         page_data = [{"page_number": p.page_number, "ocr_text": p.ocr_text} for p in pages]
 
-        # Clear existing chunks for this session before re-chunking
         print(f"\n🗑️  Clearing existing chunks for session {session_id}...")
         db.query(RecursiveChunk).filter(RecursiveChunk.session_id == session_id).delete()
         db.query(AgenticChunk).filter(AgenticChunk.session_id == session_id).delete()
         db.commit()
 
-        # Recursive chunks
         print(f"\n📦 Creating recursive chunks for session {session_id}...")
         rec_chunks = create_recursive_chunks(page_data)
         for c in rec_chunks:
@@ -184,7 +253,6 @@ async def create_chunks(session_id: int, request: Request):
                 chunk_size=c["chunk_size"],
             ))
 
-        # Agentic chunks
         print(f"\n🧠 Creating agentic chunks for session {session_id}...")
         ag_chunks = create_agentic_chunks(page_data)
         for c in ag_chunks:
@@ -197,7 +265,6 @@ async def create_chunks(session_id: int, request: Request):
                 chunk_size=c["chunk_size"],
             ))
 
-        # Update session status
         session = db.query(UploadSession).filter(UploadSession.id == session_id).first()
         if session:
             session.status = "chunked"
@@ -220,15 +287,12 @@ async def create_chunks(session_id: int, request: Request):
 
 @app.post("/api/embed/{session_id}")
 async def create_embeddings(session_id: int):
-    """Generate embeddings for all chunks using both 4b and 8b models."""
+    """Generate embeddings for all chunks using all 4 embedding models."""
     db = SessionLocal()
     try:
-        # Get all recursive chunks
         rec_chunks = db.query(RecursiveChunk).filter(
             RecursiveChunk.session_id == session_id
         ).order_by(RecursiveChunk.id).all()
-
-        # Get all agentic chunks
         ag_chunks = db.query(AgenticChunk).filter(
             AgenticChunk.session_id == session_id
         ).order_by(AgenticChunk.id).all()
@@ -242,37 +306,39 @@ async def create_embeddings(session_id: int):
         if not all_chunks:
             return JSONResponse({"status": "error", "message": "No chunks found"}, status_code=404)
 
-        # Clear existing embeddings for this session before re-embedding
+        # Clear existing embeddings for this session
         print(f"\n🗑️  Clearing existing embeddings for session {session_id}...")
-        db.query(Embedding4b).filter(Embedding4b.session_id == session_id).delete()
-        db.query(Embedding8b).filter(Embedding8b.session_id == session_id).delete()
+        db.query(ChunkEmbedding).filter(ChunkEmbedding.session_id == session_id).delete()
         db.commit()
 
         texts = [c["text"] for c in all_chunks]
+        emb_counts = {}
 
-        # 4b embeddings — unload after last chunk to free VRAM before loading 8b
-        print(f"\n🔵 Generating 4b embeddings for {len(texts)} chunks...")
-        embs_4b = get_embeddings_batch(texts, EMBEDDING_MODEL_4B, unload_after=True)
-        for i, emb in enumerate(embs_4b):
-            db.add(Embedding4b(
+        # Step 1: Insert one row per chunk (embeddings filled in next step)
+        for chunk in all_chunks:
+            db.add(ChunkEmbedding(
                 session_id=session_id,
-                chunk_id=all_chunks[i]["id"],
-                chunk_type=all_chunks[i]["type"],
-                chunk_text=all_chunks[i]["text"],
-                embedding=emb.tobytes(),
+                chunk_id=chunk["id"],
+                chunk_type=chunk["type"],
+                chunk_text=chunk["text"],
             ))
+        db.commit()
 
-        # 8b embeddings — unload after last chunk when done
-        print(f"\n🟣 Generating 8b embeddings for {len(texts)} chunks...")
-        embs_8b = get_embeddings_batch(texts, EMBEDDING_MODEL_8B, unload_after=True)
-        for i, emb in enumerate(embs_8b):
-            db.add(Embedding8b(
-                session_id=session_id,
-                chunk_id=all_chunks[i]["id"],
-                chunk_type=all_chunks[i]["type"],
-                chunk_text=all_chunks[i]["text"],
-                embedding=emb.tobytes(),
-            ))
+        # Retrieve inserted rows in order
+        emb_rows = db.query(ChunkEmbedding).filter(
+            ChunkEmbedding.session_id == session_id
+        ).order_by(ChunkEmbedding.id).all()
+
+        # Step 2: For each model, generate embeddings and update the corresponding column
+        for key, ollama_model, label in EMBEDDING_MODELS:
+            print(f"\n{label} Generating embeddings for {len(texts)} chunks...")
+            embs = get_embeddings_batch(texts, ollama_model, unload_after=True)
+            col_name = _MODEL_EMB_COL[key]
+            for row, emb in zip(emb_rows, embs):
+                setattr(row, col_name, emb_to_db(emb))
+            db.commit()
+            emb_counts[key] = len(embs)
+            print(f"    ✅ {label}: {len(embs)} embeddings stored")
 
         session = db.query(UploadSession).filter(UploadSession.id == session_id).first()
         if session:
@@ -282,8 +348,7 @@ async def create_embeddings(session_id: int):
         return JSONResponse({
             "status": "success",
             "total_chunks": len(all_chunks),
-            "embeddings_4b": len(embs_4b),
-            "embeddings_8b": len(embs_8b),
+            **{f"embeddings_{k}": v for k, v in emb_counts.items()},
         })
 
     except Exception as e:
@@ -297,7 +362,6 @@ async def create_embeddings(session_id: int):
 
 @app.get("/api/questions/{session_id}")
 async def get_questions(session_id: int):
-    """Get saved questions for a session."""
     db = SessionLocal()
     try:
         questions = db.query(Question).filter(
@@ -320,13 +384,11 @@ async def get_questions(session_id: int):
 
 @app.post("/api/questions/{session_id}")
 async def save_questions(session_id: int, request: Request):
-    """Save questions and golden answers for a session."""
     db = SessionLocal()
     try:
         body = await request.json()
         questions = body.get("questions", [])
 
-        # Delete existing questions for this session
         db.query(Question).filter(Question.session_id == session_id).delete()
 
         for q in questions:
@@ -351,44 +413,41 @@ async def save_questions(session_id: int, request: Request):
 
 @app.post("/api/rag/{session_id}")
 async def run_rag(session_id: int, request: Request):
-    """Run RAG pipeline for all questions with both embedding models."""
+    """Run RAG pipeline for all questions with all 4 embedding models."""
     db = SessionLocal()
     try:
         body = await request.json()
         apply_llm_overrides(body.get("llm_params", {}))
-        chunk_type = body.get("chunk_type", "recursive")  # 'recursive', 'agentic', or 'all'
-        top_k = body.get("top_k", None)  # None = use default from config
+        chunk_type = body.get("chunk_type", "recursive")
+        top_k = body.get("top_k", None)
 
-        # Load embeddings — support 'all' by combining both types
+        # Load embeddings for all models from unified table
         if chunk_type == "all":
-            embs_4b_rows = db.query(Embedding4b).filter(
-                Embedding4b.session_id == session_id,
-            ).all()
-            embs_8b_rows = db.query(Embedding8b).filter(
-                Embedding8b.session_id == session_id,
+            emb_rows = db.query(ChunkEmbedding).filter(
+                ChunkEmbedding.session_id == session_id
             ).all()
         else:
-            embs_4b_rows = db.query(Embedding4b).filter(
-                Embedding4b.session_id == session_id,
-                Embedding4b.chunk_type == chunk_type,
-            ).all()
-            embs_8b_rows = db.query(Embedding8b).filter(
-                Embedding8b.session_id == session_id,
-                Embedding8b.chunk_type == chunk_type,
+            emb_rows = db.query(ChunkEmbedding).filter(
+                ChunkEmbedding.session_id == session_id,
+                ChunkEmbedding.chunk_type == chunk_type,
             ).all()
 
-        if not embs_4b_rows or not embs_8b_rows:
+        embeddings_by_model = {}
+        for key, _, label in EMBEDDING_MODELS:
+            col_name = _MODEL_EMB_COL[key]
+            embeddings_by_model[key] = [
+                {
+                    "chunk_text": row.chunk_text,
+                    "chunk_type": row.chunk_type,
+                    "embedding": emb_from_db(getattr(row, col_name)),
+                }
+                for row in emb_rows
+                if getattr(row, col_name) is not None
+            ]
+            print(f"  {label}: {len(embeddings_by_model[key])} embeddings loaded")
+
+        if all(len(v) == 0 for v in embeddings_by_model.values()):
             return JSONResponse({"status": "error", "message": "No embeddings found. Run embedding step first."}, status_code=404)
-
-        # Convert stored bytes back to numpy arrays
-        embeddings_4b = [
-            {"chunk_text": e.chunk_text, "chunk_type": e.chunk_type, "embedding": np.frombuffer(e.embedding, dtype=np.float32).copy()}
-            for e in embs_4b_rows
-        ]
-        embeddings_8b = [
-            {"chunk_text": e.chunk_text, "chunk_type": e.chunk_type, "embedding": np.frombuffer(e.embedding, dtype=np.float32).copy()}
-            for e in embs_8b_rows
-        ]
 
         # Load questions
         questions = db.query(Question).filter(
@@ -403,11 +462,10 @@ async def run_rag(session_id: int, request: Request):
             for q in questions
         ]
 
-        # Run RAG
         print(f"\n🚀 Running RAG pipeline for session {session_id} ({chunk_type} chunks)...")
-        rag_results = run_rag_pipeline(q_data, embeddings_4b, embeddings_8b, top_k=top_k)
+        rag_results = run_rag_pipeline(q_data, embeddings_by_model, top_k=top_k)
 
-        # Clear existing EvaluationResult for this session+chunk_type before storing new ones
+        # Clear existing EvaluationResult for this session+chunk_type
         print(f"\n🗑️  Clearing existing RAG results for session {session_id} (chunk_type={chunk_type})...")
         db.query(EvaluationResult).filter(
             EvaluationResult.session_id == session_id,
@@ -415,12 +473,12 @@ async def run_rag(session_id: int, request: Request):
         ).delete()
         db.commit()
 
-        # Store results
-        store_chunk_type = chunk_type
+        # Store results — one row per (question, model)
         for r in rag_results:
-            for model_key, model_name in [("result_4b", "4b"), ("result_8b", "8b")]:
-                mr = r[model_key]
-                # Store as list of {text, sim, type} to preserve similarity scores and chunk type
+            for key, _, _ in EMBEDDING_MODELS:
+                mr = r["results_by_model"].get(key)
+                if not mr:
+                    continue
                 chunks_json = json.dumps(
                     [{"text": c["chunk_text"], "sim": round(c.get("similarity", 0), 4), "type": c.get("chunk_type", "")}
                      for c in mr["retrieved_chunks"]],
@@ -430,8 +488,8 @@ async def run_rag(session_id: int, request: Request):
                     session_id=session_id,
                     question_id=0,
                     question_number=r["question_number"],
-                    model_name=model_name,
-                    chunk_type=store_chunk_type,
+                    model_name=key,
+                    chunk_type=chunk_type,
                     retrieved_chunks=chunks_json,
                     llm_answer=mr["llm_answer"],
                     llm_prompt=mr.get("llm_prompt", ""),
@@ -443,23 +501,24 @@ async def run_rag(session_id: int, request: Request):
             session.status = "rag_done"
         db.commit()
 
-        # Format results for frontend (include similarity scores)
+        # Format results for frontend
         formatted = []
         for r in rag_results:
+            answers = {}
+            chunks  = {}
+            for key, _, _ in EMBEDDING_MODELS:
+                mr = r["results_by_model"].get(key, {})
+                answers[key] = mr.get("llm_answer", "")
+                chunks[key]  = [
+                    {"text": c["chunk_text"], "similarity": round(c.get("similarity", 0), 4), "chunk_type": c.get("chunk_type", "")}
+                    for c in mr.get("retrieved_chunks", [])
+                ]
             formatted.append({
                 "question_number": r["question_number"],
-                "question_text": r["question_text"],
-                "golden_answer": r["golden_answer"],
-                "answer_4b": r["result_4b"]["llm_answer"],
-                "answer_8b": r["result_8b"]["llm_answer"],
-                "chunks_4b": [
-                    {"text": c["chunk_text"], "similarity": round(c.get("similarity", 0), 4), "chunk_type": c.get("chunk_type", "")}
-                    for c in r["result_4b"]["retrieved_chunks"]
-                ],
-                "chunks_8b": [
-                    {"text": c["chunk_text"], "similarity": round(c.get("similarity", 0), 4), "chunk_type": c.get("chunk_type", "")}
-                    for c in r["result_8b"]["retrieved_chunks"]
-                ],
+                "question_text":   r["question_text"],
+                "golden_answer":   r["golden_answer"],
+                "answers":         answers,
+                "chunks":          chunks,
             })
 
         return JSONResponse({"status": "success", "results": formatted})
@@ -477,7 +536,7 @@ async def run_rag(session_id: int, request: Request):
 
 @app.post("/api/evaluate/{session_id}")
 async def evaluate(session_id: int, request: Request):
-    """Evaluate RAG answers against golden answers using LLM."""
+    """Evaluate RAG answers against golden answers using LLM (all 4 models)."""
     db = SessionLocal()
     try:
         try:
@@ -487,62 +546,72 @@ async def evaluate(session_id: int, request: Request):
         apply_llm_overrides(body.get("llm_params", {}))
         chunk_type = body.get("chunk_type", "recursive")
 
-        # Get RAG results
-        results_4b = db.query(EvaluationResult).filter(
-            EvaluationResult.session_id == session_id,
-            EvaluationResult.model_name == "4b",
-            EvaluationResult.chunk_type == chunk_type,
-        ).order_by(EvaluationResult.question_number).all()
+        # Load results for all models
+        results_by_model = {}
+        for key, _, _ in EMBEDDING_MODELS:
+            rows = db.query(EvaluationResult).filter(
+                EvaluationResult.session_id == session_id,
+                EvaluationResult.model_name == key,
+                EvaluationResult.chunk_type == chunk_type,
+            ).order_by(EvaluationResult.question_number).all()
+            results_by_model[key] = rows
 
-        results_8b = db.query(EvaluationResult).filter(
-            EvaluationResult.session_id == session_id,
-            EvaluationResult.model_name == "8b",
-            EvaluationResult.chunk_type == chunk_type,
-        ).order_by(EvaluationResult.question_number).all()
-
-        if not results_4b or not results_8b:
+        if all(len(v) == 0 for v in results_by_model.values()):
             return JSONResponse({"status": "error", "message": "No RAG results found. Run RAG first."}, status_code=404)
 
-        # Build data for evaluation
+        # Collect all question numbers
+        all_q_nums = sorted({
+            r.question_number
+            for rows in results_by_model.values()
+            for r in rows
+        })
+
+        # Get question texts
+        questions = db.query(Question).filter(Question.session_id == session_id).all()
+        q_map = {q.question_number: q.question_text for q in questions}
+
+        # Build rag_data for evaluation
         rag_data = []
-        for r4, r8 in zip(results_4b, results_8b):
+        for q_num in all_q_nums:
+            row_by_model = {}
+            for key in results_by_model:
+                row_by_model[key] = next((r for r in results_by_model[key] if r.question_number == q_num), None)
+
+            first_row = next((r for r in row_by_model.values() if r is not None), None)
+            if not first_row:
+                continue
+
             rag_data.append({
-                "question_number": r4.question_number,
-                "question_text": "",
-                "golden_answer": r4.golden_answer or "",
-                "result_4b": {"llm_answer": r4.llm_answer or ""},
-                "result_8b": {"llm_answer": r8.llm_answer or ""},
+                "question_number":  q_num,
+                "question_text":    q_map.get(q_num, ""),
+                "golden_answer":    first_row.golden_answer or "",
+                "answers_by_model": {k: (r.llm_answer or "") for k, r in row_by_model.items() if r},
             })
 
-        # Get question text
-        questions = db.query(Question).filter(
-            Question.session_id == session_id
-        ).order_by(Question.question_number).all()
-        q_map = {q.question_number: q.question_text for q in questions}
-        for r in rag_data:
-            r["question_text"] = q_map.get(r["question_number"], "")
-
-        # Run evaluation
         print(f"\n📊 Evaluating RAG results for session {session_id}...")
         evaluations = evaluate_all(rag_data)
 
         # Build prompt lookup maps from DB rows
-        prompt_map_4b = {r.question_number: r.llm_prompt for r in results_4b}
-        prompt_map_8b = {r.question_number: r.llm_prompt for r in results_8b}
+        prompt_maps = {key: {r.question_number: r.llm_prompt for r in rows} for key, rows in results_by_model.items()}
 
         # Update evaluation results in DB
         for ev in evaluations:
-            for r4 in results_4b:
-                if r4.question_number == ev["question_number"]:
-                    r4.evaluation_text = ev["evaluation_text"]
-                    r4.evaluation_score = ev.get("score_4b", 0)
-            for r8 in results_8b:
-                if r8.question_number == ev["question_number"]:
-                    r8.evaluation_text = ev["evaluation_text"]
-                    r8.evaluation_score = ev.get("score_8b", 0)
-            # Attach prompts so frontend can display them immediately
-            ev["llm_prompt_4b"] = prompt_map_4b.get(ev["question_number"], "")
-            ev["llm_prompt_8b"] = prompt_map_8b.get(ev["question_number"], "")
+            for key, rows in results_by_model.items():
+                score = ev.get(f"score_{key}", 0)
+                for r in rows:
+                    if r.question_number == ev["question_number"]:
+                        r.evaluation_text  = ev["evaluation_text"]
+                        r.evaluation_score = score
+
+            # Attach prompts and chunks for immediate frontend display
+            q_num = ev["question_number"]
+            ev["llm_prompts"] = {key: prompt_maps[key].get(q_num, "") for key in results_by_model}
+            ev["chunks"] = {
+                key: _parse_retrieved_chunks(
+                    next((r.retrieved_chunks for r in rows if r.question_number == q_num), None)
+                )
+                for key, rows in results_by_model.items()
+            }
 
         session = db.query(UploadSession).filter(UploadSession.id == session_id).first()
         if session:
@@ -564,7 +633,6 @@ async def evaluate(session_id: int, request: Request):
 
 @app.get("/api/prompt/evaluation")
 async def get_eval_prompt():
-    """Return current evaluation prompt template (custom or default)."""
     return JSONResponse({
         "prompt": get_evaluation_prompt(),
         "is_custom": os.path.exists(PROMPT_FILE),
@@ -574,7 +642,6 @@ async def get_eval_prompt():
 
 @app.post("/api/prompt/evaluation")
 async def save_eval_prompt(request: Request):
-    """Save or reset the evaluation prompt template."""
     try:
         body = await request.json()
     except Exception:
@@ -589,9 +656,7 @@ async def save_eval_prompt(request: Request):
     if not prompt:
         return JSONResponse({"status": "error", "message": "Prompt ว่างเปล่า"}, status_code=400)
 
-    # Validate required placeholders
-    required = ["{question}", "{golden_answer}", "{answer_4b}", "{answer_8b}"]
-    missing = [r for r in required if r not in prompt]
+    missing = [r for r in REQUIRED_PLACEHOLDERS if r not in prompt]
     if missing:
         return JSONResponse({
             "status": "error",
@@ -608,7 +673,6 @@ async def save_eval_prompt(request: Request):
 
 @app.post("/api/wer/{session_id}")
 async def compute_wer_endpoint(session_id: int):
-    """Compute WER for OCR pages against ground truth."""
     db = SessionLocal()
     try:
         pages = db.query(OcrPage).filter(
@@ -618,12 +682,10 @@ async def compute_wer_endpoint(session_id: int):
         if not pages:
             return JSONResponse({"status": "error", "message": "No OCR pages found"}, status_code=404)
 
-        # Build image path map from OcrPage
         image_map = {p.page_number: p.image_path for p in pages}
         page_data = [{"page_number": p.page_number, "ocr_text": p.ocr_text} for p in pages]
         wer_results = compute_wer_for_session(page_data)
 
-        # Store WER results (store full text in preview columns — they are Text type)
         db.query(WerResult).filter(WerResult.session_id == session_id).delete()
         for wr in wer_results:
             db.add(WerResult(
@@ -634,7 +696,6 @@ async def compute_wer_endpoint(session_id: int):
                 wer_score=wr["wer_score"],
             ))
 
-            # Also update the OcrPage wer_score
             ocr_page = db.query(OcrPage).filter(
                 OcrPage.session_id == session_id,
                 OcrPage.page_number == wr["page_number"],
@@ -646,7 +707,6 @@ async def compute_wer_endpoint(session_id: int):
 
         avg_wer = sum(w["wer_score"] for w in wer_results if w["wer_score"] >= 0) / max(1, len([w for w in wer_results if w["wer_score"] >= 0]))
 
-        # Add image_url to each result before returning
         for wr in wer_results:
             wr["image_url"] = _image_url(image_map.get(wr["page_number"], ""))
 
@@ -667,12 +727,11 @@ async def compute_wer_endpoint(session_id: int):
 
 @app.get("/api/llm-config")
 async def get_llm_config():
-    """Return current LLM parameter defaults (from .env)."""
     return JSONResponse({
         "temperature": LLM_TEMPERATURE,
-        "top_p": LLM_TOP_P,
+        "top_p":       LLM_TOP_P,
         "max_predict": LLM_MAX_PREDICT,
-        "num_ctx": LLM_NUM_CTX,
+        "num_ctx":     LLM_NUM_CTX,
     })
 
 
@@ -705,109 +764,81 @@ async def get_results(session_id: int):
     try:
         from collections import defaultdict
 
-        # Get all evaluation results
         evals = db.query(EvaluationResult).filter(
             EvaluationResult.session_id == session_id
         ).order_by(EvaluationResult.question_number, EvaluationResult.model_name).all()
 
-        # Get WER results
         wers = db.query(WerResult).filter(
             WerResult.session_id == session_id
         ).order_by(WerResult.page_number).all()
 
-        # Get OcrPage image paths for WER display
         ocr_pages = db.query(OcrPage).filter(OcrPage.session_id == session_id).all()
         page_image_map = {p.page_number: p.image_path for p in ocr_pages}
 
-        # Get chunks counts
         rec_count = db.query(RecursiveChunk).filter(RecursiveChunk.session_id == session_id).count()
-        ag_count = db.query(AgenticChunk).filter(AgenticChunk.session_id == session_id).count()
+        ag_count  = db.query(AgenticChunk).filter(AgenticChunk.session_id == session_id).count()
 
-        # Get question texts
         questions = db.query(Question).filter(Question.session_id == session_id).all()
         q_text_map = {q.question_number: q.question_text for q in questions}
 
-        # Pick chunk_type to display (priority: all > recursive > agentic)
+        # Pick chunk_type to display
         distinct_cts = list({e.chunk_type for e in evals})
         selected_ct = next(
             (ct for ct in ["all", "recursive", "agentic"] if ct in distinct_cts),
             distinct_cts[0] if distinct_cts else "recursive",
         )
 
-        # Build rag_results grouped by question for selected chunk_type
+        def parse_chunks(e):
+            return _parse_retrieved_chunks(e.retrieved_chunks if e else None)
+
+        # Group evals by (question_number, model_name)
         rag_by_q: dict = defaultdict(dict)
+        eval_by_q: dict = defaultdict(dict)
         for e in evals:
             if e.chunk_type == selected_ct:
-                rag_by_q[e.question_number][e.model_name] = e
+                rag_by_q[e.question_number][e.model_name]  = e
+                eval_by_q[e.question_number][e.model_name] = e
 
-        def parse_chunks(e):
-            if not e or not e.retrieved_chunks:
-                return []
-            try:
-                raw = json.loads(e.retrieved_chunks)
-                result = []
-                for item in raw:
-                    if isinstance(item, dict):
-                        # New format: {text, sim, type}
-                        result.append({
-                            "text": item.get("text", ""),
-                            "similarity": item.get("sim", 0),
-                            "chunk_type": item.get("type", ""),
-                        })
-                    else:
-                        # Old format: plain string
-                        result.append({"text": str(item), "similarity": 0, "chunk_type": ""})
-                return result
-            except Exception:
-                return []
+        model_keys = [key for key, _, _ in EMBEDDING_MODELS]
 
         rag_results = []
         for q_num in sorted(rag_by_q.keys()):
             m = rag_by_q[q_num]
-            r4, r8 = m.get("4b"), m.get("8b")
+            first_row = next((m[k] for k in model_keys if k in m), None)
             rag_results.append({
                 "question_number": q_num,
-                "chunk_type": selected_ct,
-                "question_text": q_text_map.get(q_num, ""),
-                "golden_answer": (r4 or r8).golden_answer if (r4 or r8) else "",
-                "answer_4b": r4.llm_answer if r4 else "",
-                "answer_8b": r8.llm_answer if r8 else "",
-                "chunks_4b": parse_chunks(r4),
-                "chunks_8b": parse_chunks(r8),
+                "chunk_type":      selected_ct,
+                "question_text":   q_text_map.get(q_num, ""),
+                "golden_answer":   first_row.golden_answer if first_row else "",
+                "answers": {key: (m[key].llm_answer if key in m else "") for key in model_keys},
+                "chunks":  {key: parse_chunks(m.get(key))                 for key in model_keys},
             })
-
-        # Build eval_summary (only questions that have been scored)
-        eval_by_q: dict = defaultdict(dict)
-        for e in evals:
-            if e.chunk_type == selected_ct:
-                eval_by_q[e.question_number][e.model_name] = e
 
         eval_summary = []
         for q_num in sorted(eval_by_q.keys()):
             m = eval_by_q[q_num]
-            r4, r8 = m.get("4b"), m.get("8b")
-            if (r4 and r4.evaluation_score is not None) or (r8 and r8.evaluation_score is not None):
+            first_row = next((m[k] for k in model_keys if k in m), None)
+            scores = {key: (m[key].evaluation_score if key in m else None) for key in model_keys}
+            if any(v is not None for v in scores.values()):
                 eval_summary.append({
-                    "question_number": q_num,
-                    "question_text": q_text_map.get(q_num, ""),
-                    "golden_answer": (r4 or r8).golden_answer if (r4 or r8) else "",
-                    "answer_4b": r4.llm_answer if r4 else "",
-                    "answer_8b": r8.llm_answer if r8 else "",
-                    "score_4b": r4.evaluation_score if r4 else None,
-                    "score_8b": r8.evaluation_score if r8 else None,
-                    "evaluation_text": (r4.evaluation_text if (r4 and r4.evaluation_text) else (r8.evaluation_text if r8 else "")),
-                    "llm_prompt_4b": r4.llm_prompt if r4 else "",
-                    "llm_prompt_8b": r8.llm_prompt if r8 else "",
+                    "question_number":  q_num,
+                    "question_text":    q_text_map.get(q_num, ""),
+                    "golden_answer":    first_row.golden_answer if first_row else "",
+                    "answers":          {key: (m[key].llm_answer if key in m else "") for key in model_keys},
+                    "scores":           scores,
+                    "evaluation_text":  next((m[k].evaluation_text for k in model_keys if k in m and m[k].evaluation_text), ""),
+                    "llm_prompts":      {key: (m[key].llm_prompt if key in m else "") for key in model_keys},
+                    "chunks":           {key: parse_chunks(m.get(key)) for key in model_keys},
                 })
 
         return JSONResponse({
             "evaluations": [
                 {
                     "question_number": e.question_number,
-                    "model_name": e.model_name,
-                    "chunk_type": e.chunk_type,
-                    "llm_answer": e.llm_answer,
-                    "golden_answer": e.golden_answer,
+                    "model_name":      e.model_name,
+                    "chunk_type":      e.chunk_type,
+                    "llm_answer":      e.llm_answer,
+                    "golden_answer":   e.golden_answer,
                     "evaluation_text": e.evaluation_text,
                     "evaluation_score": e.evaluation_score,
                 }
@@ -815,16 +846,16 @@ async def get_results(session_id: int):
             ],
             "wer_results": [
                 {
-                    "page_number": w.page_number,
-                    "wer_score": w.wer_score,
-                    "ocr_text": w.ocr_text_preview,
-                    "reference_text": w.reference_text_preview,
-                    "image_url": _image_url(page_image_map.get(w.page_number, "")),
+                    "page_number":     w.page_number,
+                    "wer_score":       w.wer_score,
+                    "ocr_text":        w.ocr_text_preview,
+                    "reference_text":  w.reference_text_preview,
+                    "image_url":       _image_url(page_image_map.get(w.page_number, "")),
                 }
                 for w in wers
             ],
             "chunk_counts": {"recursive": rec_count, "agentic": ag_count},
-            "rag_results": rag_results,
+            "rag_results":  rag_results,
             "eval_summary": eval_summary,
         })
     finally:

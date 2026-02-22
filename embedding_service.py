@@ -71,7 +71,7 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 def retrieve_top_k(
     query_embedding: np.ndarray,
     stored_embeddings: list[dict],
-    top_k: int = 5,
+    top_k: int = 3,
 ) -> list[dict]:
     """
     Retrieve top-k most similar chunks based on cosine similarity.

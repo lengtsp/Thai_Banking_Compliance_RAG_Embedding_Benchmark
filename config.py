@@ -20,11 +20,25 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:7869")
 OCR_MODEL = os.getenv("OCR_MODEL", "qwen3-vl:30b-a3b-instruct-q8_0")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-oss:120b")
 
+EMBEDDING_MODEL_06B = os.getenv("EMBEDDING_MODEL_06B", "qwen3-embedding:0.6b")
+EMBEDDING_DIM_06B = int(os.getenv("EMBEDDING_DIM_06B", "1024"))
+
 EMBEDDING_MODEL_4B = os.getenv("EMBEDDING_MODEL_4B", "qwen3-embedding:4b-q8_0")
 EMBEDDING_DIM_4B = int(os.getenv("EMBEDDING_DIM_4B", "2560"))
 
 EMBEDDING_MODEL_8B = os.getenv("EMBEDDING_MODEL_8B", "qwen3-embedding:8b")
 EMBEDDING_DIM_8B = int(os.getenv("EMBEDDING_DIM_8B", "4096"))
+
+EMBEDDING_MODEL_BGEM3 = os.getenv("EMBEDDING_MODEL_BGEM3", "bge-m3:latest")
+EMBEDDING_DIM_BGEM3 = int(os.getenv("EMBEDDING_DIM_BGEM3", "1024"))
+
+# All embedding models in fixed order (key, ollama_model, display_label)
+EMBEDDING_MODELS = [
+    ("06b",   EMBEDDING_MODEL_06B,   "🩵 0.6B"),
+    ("4b",    EMBEDDING_MODEL_4B,    "🔵 4B"),
+    ("8b",    EMBEDDING_MODEL_8B,    "🟣 8B"),
+    ("bgem3", EMBEDDING_MODEL_BGEM3, "🟠 BGE-M3"),
+]
 
 # ===== LLM Options =====
 LLM_TEMPERATURE  = float(os.getenv("LLM_TEMPERATURE",  "0.6"))
@@ -72,7 +86,7 @@ RECURSIVE_CHUNK_SIZE = int(os.getenv("RECURSIVE_CHUNK_SIZE", "1300"))
 RECURSIVE_CHUNK_OVERLAP = int(os.getenv("RECURSIVE_CHUNK_OVERLAP", "30"))
 
 # ===== RAG =====
-RAG_TOP_K = int(os.getenv("RAG_TOP_K", "5"))
+RAG_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
 
 # ===== App =====
 APP_HOST = os.getenv("APP_HOST", "0.0.0.0")

@@ -2,10 +2,14 @@ import numpy as np
 import httpx
 from config import (
     OLLAMA_BASE_URL, LLM_MODEL, RAG_TOP_K,
-    EMBEDDING_MODEL_4B, EMBEDDING_MODEL_8B,
+    EMBEDDING_MODELS,
     llm_options,
 )
 from embedding_service import get_embedding, retrieve_top_k
+
+# Quick lookup: model key → ollama model name
+_MODEL_OLLAMA = {key: model for key, model, _ in EMBEDDING_MODELS}
+_MODEL_LABEL  = {key: label for key, _, label in EMBEDDING_MODELS}
 
 
 def generate_answer(question: str, context_chunks: list[dict]) -> dict:
@@ -55,71 +59,69 @@ def generate_answer(question: str, context_chunks: list[dict]) -> dict:
 
 def run_rag_pipeline(
     questions: list[dict],
-    embeddings_4b: list[dict],
-    embeddings_8b: list[dict],
+    embeddings_by_model: dict,   # {model_key: [{"chunk_text": str, "embedding": np.ndarray, ...}]}
     top_k: int = None,
 ) -> list[dict]:
     """
-    Run full RAG pipeline for all questions, one question at a time.
-    Per question order: 4B retrieve → 4B LLM → 8B retrieve → 8B LLM.
-    Returns list of results per question.
+    Run full RAG pipeline for all questions across all embedding models.
+    Per question: for each model → retrieve top-k → generate answer.
+
+    Returns list of:
+    {
+        "question_number": int,
+        "question_text": str,
+        "golden_answer": str,
+        "results_by_model": {
+            model_key: {
+                "retrieved_chunks": [...],
+                "llm_answer": str,
+                "llm_prompt": str,
+            }
+        }
+    }
     """
     if top_k is None:
         top_k = RAG_TOP_K
 
+    model_keys = [key for key, _, _ in EMBEDDING_MODELS if key in embeddings_by_model]
     all_results = []
 
     for q in questions:
-        q_num = q["question_number"]
+        q_num  = q["question_number"]
         q_text = q["question_text"]
         print(f"\n{'='*60}")
         print(f"  📝 ข้อที่ {q_num}: {q_text[:80]}...")
         print(f"{'='*60}")
 
-        # --- Step 1: 4B Retrieve ---
-        print(f"\n  [Step 1] 🔵 4B Embedding — Retrieving top-{top_k} chunks...")
-        query_emb_4b = get_embedding(q_text, EMBEDDING_MODEL_4B)
-        top_chunks_4b = retrieve_top_k(query_emb_4b, embeddings_4b, top_k)
-        top_sim_4b = top_chunks_4b[0]["similarity"] if top_chunks_4b else 0
-        print(f"           Retrieved {len(top_chunks_4b)} chunks | top similarity: {top_sim_4b:.4f}")
+        results_by_model = {}
+        for step, key in enumerate(model_keys, 1):
+            label       = _MODEL_LABEL.get(key, key)
+            ollama_model = _MODEL_OLLAMA.get(key, key)
+            embeddings   = embeddings_by_model[key]
 
-        # --- Step 2: 4B LLM Answer ---
-        print(f"\n  [Step 2] 🔵 4B — Sending to LLM for answer...")
-        result_4b_gen = generate_answer(q_text, top_chunks_4b)
-        answer_4b, prompt_4b = result_4b_gen["answer"], result_4b_gen["prompt"]
-        print(f"           Answer (preview): {answer_4b[:120]}...")
+            print(f"\n  [Step {step}A] {label} — Retrieving top-{top_k} chunks...")
+            query_emb  = get_embedding(q_text, ollama_model)
+            top_chunks = retrieve_top_k(query_emb, embeddings, top_k)
+            top_sim    = top_chunks[0]["similarity"] if top_chunks else 0
+            print(f"           Retrieved {len(top_chunks)} chunks | top similarity: {top_sim:.4f}")
 
-        # --- Step 3: 8B Retrieve ---
-        print(f"\n  [Step 3] 🟣 8B Embedding — Retrieving top-{top_k} chunks...")
-        query_emb_8b = get_embedding(q_text, EMBEDDING_MODEL_8B)
-        top_chunks_8b = retrieve_top_k(query_emb_8b, embeddings_8b, top_k)
-        top_sim_8b = top_chunks_8b[0]["similarity"] if top_chunks_8b else 0
-        print(f"           Retrieved {len(top_chunks_8b)} chunks | top similarity: {top_sim_8b:.4f}")
+            print(f"\n  [Step {step}B] {label} — Sending to LLM for answer...")
+            gen = generate_answer(q_text, top_chunks)
+            print(f"           Answer (preview): {gen['answer'][:120]}...")
 
-        # --- Step 4: 8B LLM Answer ---
-        print(f"\n  [Step 4] 🟣 8B — Sending to LLM for answer...")
-        result_8b_gen = generate_answer(q_text, top_chunks_8b)
-        answer_8b, prompt_8b = result_8b_gen["answer"], result_8b_gen["prompt"]
-        print(f"           Answer (preview): {answer_8b[:120]}...")
+            results_by_model[key] = {
+                "retrieved_chunks": top_chunks,
+                "llm_answer":       gen["answer"],
+                "llm_prompt":       gen["prompt"],
+            }
 
         print(f"\n  ✅ ข้อที่ {q_num} เสร็จสมบูรณ์")
 
         all_results.append({
-            "question_number": q_num,
-            "question_text": q_text,
-            "golden_answer": q.get("golden_answer", ""),
-            "result_4b": {
-                "model_name": "4b",
-                "retrieved_chunks": top_chunks_4b,
-                "llm_answer": answer_4b,
-                "llm_prompt": prompt_4b,
-            },
-            "result_8b": {
-                "model_name": "8b",
-                "retrieved_chunks": top_chunks_8b,
-                "llm_answer": answer_8b,
-                "llm_prompt": prompt_8b,
-            },
+            "question_number":  q_num,
+            "question_text":    q_text,
+            "golden_answer":    q.get("golden_answer", ""),
+            "results_by_model": results_by_model,
         })
 
     return all_results
