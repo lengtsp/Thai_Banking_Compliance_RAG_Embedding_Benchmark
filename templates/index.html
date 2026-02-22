@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="th">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RAG Embedding Comparison — 4B vs 8B</title>
+  <meta name="description" content="เปรียบเทียบคุณภาพ RAG ระหว่าง Embedding Model 4B และ 8B">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+    rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+          colors: {
+            surface: { 50: '#ffffff', 100: '#f8fafc', 200: '#f1f5f9', 300: '#e2e8f0', 400: '#f9fafb' },
+            brand: { blue: '#6366f1', purple: '#a855f7', cyan: '#0891b2', green: '#16a34a', orange: '#ea580c', red: '#dc2626', pink: '#db2777' },
+          },
+        }
+      }
+    }
+  </script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body class="bg-surface-400 text-gray-800 h-screen font-sans antialiased flex flex-col overflow-hidden">
+
+  <!-- ============ TOP BAR ============ -->
+  <header class="shrink-0 border-b border-gray-200 backdrop-blur-xl bg-white/90 z-50 shadow-sm">
+    <div class="max-w-full mx-auto px-5 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div
+          class="w-9 h-9 rounded-lg bg-gradient-to-br from-brand-blue to-brand-purple flex items-center justify-center text-base shadow-lg shadow-brand-blue/20">
+          ⚡</div>
+        <div>
+          <h1
+            class="text-base font-bold bg-gradient-to-r from-brand-blue via-brand-purple to-brand-pink bg-clip-text text-transparent leading-tight">
+            RAG Embedding Comparison</h1>
+          <p class="text-[10px] text-gray-500">qwen3-embedding 4B vs 8B</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-3">
+        <select id="sessionSelect" onchange="onSessionChange(this.value)"
+          class="bg-white border border-gray-200 text-xs rounded-lg px-3 py-1.5 text-gray-700 focus:outline-none focus:ring-2 focus:ring-brand-blue/30 transition-all min-w-[180px] shadow-sm">
+          <option value="">-- เลือก Session --</option>
+        </select>
+        <span id="sessionBadge"
+          class="px-2.5 py-1 rounded-full text-[10px] font-semibold bg-gray-100 text-gray-500 border border-gray-200">No
+          Session</span>
+        <button onclick="openGoldenModal()"
+          class="px-3 py-1.5 rounded-lg bg-orange-50 border border-orange-200 text-brand-orange text-xs font-semibold hover:bg-orange-100 transition-all"
+          title="ดู/แก้ไข Golden Dataset">
+          📝 Golden Dataset
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============ MAIN LAYOUT (Chat-like) ============ -->
+  <div class="flex-1 flex overflow-hidden">
+
+    <!-- ====== LEFT: Control Panel ====== -->
+    <aside class="w-80 shrink-0 border-r border-gray-200 bg-white flex flex-col overflow-hidden">
+
+      <!-- Scrollable content (pipeline + settings + upload) -->
+      <div class="flex-1 overflow-y-auto custom-scrollbar">
+
+      <!-- Pipeline Timeline (Vertical) -->
+      <div class="p-4 border-b border-gray-100">
+        <h3 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Pipeline Status</h3>
+        <div class="space-y-1" id="verticalTimeline">
+          <div class="tl-step" id="step-upload" data-step="1">
+            <div class="tl-dot">1</div>
+            <div class="tl-info">
+              <div class="tl-name">Upload & OCR</div>
+              <div class="tl-status" id="step-upload-status">รอดำเนินการ</div>
+            </div>
+          </div>
+          <div class="tl-step" id="step-chunk" data-step="2">
+            <div class="tl-dot">2</div>
+            <div class="tl-info">
+              <div class="tl-name">Chunking</div>
+              <div class="tl-status" id="step-chunk-status">รอดำเนินการ</div>
+            </div>
+          </div>
+          <div class="tl-step" id="step-embed" data-step="3">
+            <div class="tl-dot">3</div>
+            <div class="tl-info">
+              <div class="tl-name">Embedding</div>
+              <div class="tl-status" id="step-embed-status">รอดำเนินการ</div>
+            </div>
+          </div>
+          <div class="tl-step" id="step-rag" data-step="4">
+            <div class="tl-dot">4</div>
+            <div class="tl-info">
+              <div class="tl-name">RAG Query</div>
+              <div class="tl-status" id="step-rag-status">รอดำเนินการ</div>
+            </div>
+          </div>
+          <div class="tl-step" id="step-evaluate" data-step="5">
+            <div class="tl-dot">5</div>
+            <div class="tl-info">
+              <div class="tl-name">Evaluation</div>
+              <div class="tl-status" id="step-evaluate-status">รอดำเนินการ</div>
+            </div>
+          </div>
+          <div class="tl-step" id="step-wer" data-step="6">
+            <div class="tl-dot">6</div>
+            <div class="tl-info">
+              <div class="tl-name">WER</div>
+              <div class="tl-status" id="step-wer-status">รอดำเนินการ</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Settings -->
+      <div class="p-4 border-b border-gray-100 space-y-3">
+        <h3 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Settings</h3>
+        <div class="flex items-center justify-between">
+          <label class="text-xs text-gray-500">Chunk Type</label>
+          <select id="chunkType"
+            class="bg-white border border-gray-200 text-xs rounded-lg px-2.5 py-1.5 text-gray-700 focus:outline-none focus:ring-1 focus:ring-brand-blue/30 w-28 shadow-sm">
+            <option value="all">All (Combined)</option>
+            <option value="recursive">Recursive</option>
+            <option value="agentic">Agentic</option>
+          </select>
+        </div>
+        <div class="flex items-center justify-between">
+          <label class="text-xs text-gray-500">Top-K</label>
+          <input type="number" id="topKInput" value="5" min="1" max="20" step="1"
+            class="w-16 bg-white border border-gray-200 text-xs rounded-lg px-2.5 py-1.5 text-gray-700 text-center focus:outline-none focus:ring-1 focus:ring-brand-blue/30 shadow-sm">
+        </div>
+        <div class="flex items-center justify-between">
+          <label class="text-xs text-gray-500">Override จากขั้น</label>
+          <select id="overrideFromStep"
+            class="bg-white border border-gray-200 text-xs rounded-lg px-2.5 py-1.5 text-gray-700 focus:outline-none focus:ring-1 focus:ring-brand-blue/30 w-28 shadow-sm">
+            <option value="off">ปิด (ต่อเดิม)</option>
+            <option value="1">1 — Upload</option>
+            <option value="2">2 — Chunk</option>
+            <option value="3">3 — Embed</option>
+            <option value="4">4 — RAG</option>
+            <option value="5">5 — Evaluate</option>
+            <option value="6">6 — WER</option>
+          </select>
+        </div>
+
+        <!-- LLM Parameters -->
+        <div class="pt-2 border-t border-gray-100">
+          <h4 class="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">LLM Parameters</h4>
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <label class="text-xs text-gray-500"></label>
+              <input type="number" id="llmTemperature" step="0.05" min="0" max="2" value="0.6"
+                class="w-20 bg-white border border-gray-200 text-xs rounded-lg px-2 py-1.5 text-gray-700 text-center focus:outline-none focus:ring-1 focus:ring-brand-blue/30 shadow-sm">
+            </div>
+            <div class="flex items-center justify-between">
+              <label class="text-xs text-gray-500">Top-P</label>
+              <input type="number" id="llmTopP" step="0.05" min="0" max="1" value="0.95"
+                class="w-20 bg-white border border-gray-200 text-xs rounded-lg px-2 py-1.5 text-gray-700 text-center focus:outline-none focus:ring-1 focus:ring-brand-blue/30 shadow-sm">
+            </div>
+            <div class="flex items-center justify-between">
+              <label class="text-xs text-gray-500">Max Predict</label>
+              <input type="number" id="llmMaxPredict" step="256" min="256" max="32768" value="25000"
+                class="w-20 bg-white border border-gray-200 text-xs rounded-lg px-2 py-1.5 text-gray-700 text-center focus:outline-none focus:ring-1 focus:ring-brand-blue/30 shadow-sm">
+            </div>
+            <div class="flex items-center justify-between">
+              <label class="text-xs text-gray-500">Num CTX
+                <span class="text-[9px] text-gray-400 block">0 = Ollama default</span>
+              </label>
+              <input type="number" id="llmNumCtx" step="1024" min="0" max="131072" value="50000"
+                class="w-20 bg-white border border-gray-200 text-xs rounded-lg px-2 py-1.5 text-gray-700 text-center focus:outline-none focus:ring-1 focus:ring-brand-blue/30 shadow-sm">
+            </div>
+          </div>
+        </div>
+      </div>
+
+        <!-- Upload Area -->
+        <div class="p-4 border-b border-gray-100">
+          <div id="uploadZone"
+            class="border-2 border-dashed border-gray-200 rounded-xl p-4 text-center cursor-pointer transition-all hover:border-brand-blue/40 hover:bg-indigo-50 group">
+            <div class="text-2xl mb-1 group-hover:scale-110 transition-transform">📄</div>
+            <p class="text-[11px] font-medium text-gray-500">ลาก PDF มาวาง หรือคลิก</p>
+            <input type="file" id="fileInput" accept=".pdf" multiple hidden>
+          </div>
+          <div id="fileList" class="mt-2 space-y-0.5 text-[10px] text-gray-500"></div>
+        </div>
+
+      </div><!-- end scrollable -->
+
+      <!-- Action Buttons (pinned at bottom) -->
+      <div class="p-4 space-y-2 border-t border-gray-100 shrink-0">
+        <button id="runAllBtn" onclick="runFullPipeline()" class="w-full btn-gradient text-sm">
+          <span class="flex items-center justify-center gap-2 font-semibold">
+            🚀 <span>Run Full Pipeline</span>
+          </span>
+        </button>
+        <button id="resetBtn" onclick="resetPipeline()"
+          class="w-full px-3 py-2 rounded-lg bg-gray-50 border border-gray-200 text-gray-500 text-xs font-medium hover:bg-gray-100 transition-all">
+          🔄 Reset Pipeline
+        </button>
+      </div>
+    </aside>
+
+    <!-- ====== RIGHT: Results Area (Tabbed) ====== -->
+    <main class="flex-1 flex flex-col overflow-hidden bg-gray-50/50">
+
+      <!-- Tab Bar -->
+      <div class="shrink-0 flex items-center border-b border-gray-200 bg-white/80 px-4 gap-1">
+        <button class="tab-btn active" data-tab="rag" onclick="switchTab('rag')">🔍 RAG Results</button>
+        <button class="tab-btn" data-tab="eval" onclick="switchTab('eval')">📊 Evaluation</button>
+        <button class="tab-btn" data-tab="wer" onclick="switchTab('wer')">📏 WER</button>
+        <div class="ml-auto flex items-center gap-2 py-2">
+          <span id="promptCustomBadge" class="hidden px-2 py-0.5 rounded-full text-[9px] font-bold bg-orange-100 text-orange-600 border border-orange-200">กำหนดเอง</span>
+          <button onclick="openPromptModal()"
+            class="px-3 py-1.5 rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs font-semibold hover:bg-indigo-100 transition-all whitespace-nowrap"
+            title="แก้ไข Prompt ที่ใช้ประเมินผล">
+            ✏️ Prompt ประเมินผล
+          </button>
+        </div>
+      </div>
+
+      <!-- Tab Contents -->
+      <div class="flex-1 overflow-y-auto custom-scrollbar">
+
+        <!-- RAG Tab -->
+        <div id="tab-rag" class="tab-content active p-6 space-y-4">
+          <div class="text-center py-20 text-gray-600">
+            <div class="text-5xl mb-4 opacity-20">📊</div>
+            <p class="text-sm">ยังไม่มีผลลัพธ์ — กรุณาอัปโหลด PDF และรัน Pipeline</p>
+          </div>
+        </div>
+
+        <!-- Evaluation Tab -->
+        <div id="tab-eval" class="tab-content p-6 space-y-4" style="display:none">
+          <div class="text-center py-20 text-gray-600">
+            <div class="text-5xl mb-4 opacity-20">📝</div>
+            <p class="text-sm">ยังไม่มีผลการประเมิน</p>
+          </div>
+        </div>
+
+        <!-- WER Tab -->
+        <div id="tab-wer" class="tab-content p-6" style="display:none">
+          <div class="text-center py-20 text-gray-600">
+            <div class="text-5xl mb-4 opacity-20">📐</div>
+            <p class="text-sm">ยังไม่มีผล WER</p>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ============ FLOATING LOG BUTTON + POPUP ============ -->
+  <button id="logFab" onclick="toggleLogPopup()"
+    class="fixed bottom-5 right-5 z-[90] w-12 h-12 rounded-full bg-gradient-to-br from-brand-blue to-brand-purple text-white shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center text-lg">
+    📋
+    <span id="logBadge"
+      class="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-500 text-white text-[8px] font-bold flex items-center justify-center hidden">!</span>
+  </button>
+
+  <div id="logPopup"
+    class="fixed bottom-20 right-5 z-[90] w-96 max-h-[60vh] bg-white rounded-2xl border border-gray-200 shadow-2xl flex-col overflow-hidden hidden">
+    <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+      <h3 class="text-xs font-bold text-gray-500 uppercase tracking-wider flex items-center gap-2">📋 Processing Log
+      </h3>
+      <button onclick="toggleLogPopup()"
+        class="w-6 h-6 rounded-md bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-400 text-xs transition-all">✕</button>
+    </div>
+    <div id="logArea"
+      class="flex-1 overflow-y-auto p-4 font-mono text-xs text-gray-500 custom-scrollbar leading-relaxed max-h-[calc(60vh-44px)]">
+      RAG Embedding Comparison — พร้อมใช้งาน
+    </div>
+  </div>
+
+  <!-- ============ GOLDEN DATASET MODAL ============ -->
+  <div id="goldenModal" class="fixed inset-0 z-[100] hidden">
+    <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" onclick="closeGoldenModal()"></div>
+    <div
+      class="absolute inset-4 md:inset-y-6 md:inset-x-16 bg-white rounded-2xl border border-gray-200 shadow-2xl flex flex-col overflow-hidden z-10">
+      <!-- Modal Header -->
+      <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+        <div class="flex items-center gap-3">
+          <h2 class="text-lg font-bold text-gray-800 flex items-center gap-2">📝 Golden Dataset — คำถาม & เฉลย</h2>
+          <span id="questionCountBadge"
+            class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-100 text-orange-600 border border-orange-200">0 ข้อ</span>
+        </div>
+        <button onclick="closeGoldenModal()"
+          class="w-8 h-8 rounded-lg bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-500 transition-all">✕</button>
+      </div>
+      <!-- Modal Body -->
+      <div class="flex-1 overflow-y-auto p-6 custom-scrollbar">
+        <div class="space-y-3" id="questionsContainer">
+          <!-- Filled by JS -->
+        </div>
+      </div>
+      <!-- Modal Footer -->
+      <div class="px-6 py-4 border-t border-gray-100 flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2">
+          <button onclick="addQuestion()"
+            class="px-4 py-2 rounded-lg bg-cyan-50 border border-cyan-200 text-cyan-700 text-xs font-semibold hover:bg-cyan-100 transition-all">
+            ➕ เพิ่มคำถาม
+          </button>
+          <button onclick="clearAllQuestions()"
+            class="px-4 py-2 rounded-lg bg-red-50 border border-red-200 text-red-600 text-xs font-semibold hover:bg-red-100 transition-all">
+            🗑️ ล้างทั้งหมด
+          </button>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="saveGoldenBtn" onclick="saveGoldenDataset()"
+            class="px-5 py-2 rounded-lg bg-green-50 border border-green-200 text-green-700 text-xs font-semibold hover:bg-green-100 transition-all">
+            💾 บันทึก
+          </button>
+          <button onclick="closeGoldenModal()"
+            class="px-5 py-2 rounded-lg bg-indigo-50 text-brand-blue text-xs font-semibold hover:bg-indigo-100 transition-all">ปิด</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ EVALUATION PROMPT MODAL ============ -->
+  <div id="promptModal" class="fixed inset-0 z-[100] hidden">
+    <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" onclick="closePromptModal()"></div>
+    <div class="absolute inset-4 md:inset-y-6 md:inset-x-12 bg-white rounded-2xl border border-gray-200 shadow-2xl flex flex-col overflow-hidden z-10">
+      <!-- Modal Header -->
+      <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+        <div class="flex items-center gap-3">
+          <h2 class="text-base font-bold text-gray-800">✏️ แก้ไข Evaluation Prompt</h2>
+          <span id="promptModalBadge"
+            class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-gray-100 text-gray-500 border border-gray-200">ค่าเริ่มต้น</span>
+        </div>
+        <button onclick="closePromptModal()"
+          class="w-8 h-8 rounded-lg bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-500 transition-all">✕</button>
+      </div>
+      <!-- Info bar -->
+      <div class="px-6 py-2.5 bg-indigo-50 border-b border-indigo-100 text-xs text-indigo-800">
+        <span class="font-bold">Placeholders ที่ต้องมีในทุก prompt:</span>
+        <code class="ml-2 bg-white px-1.5 py-0.5 rounded border border-indigo-200">{question}</code>
+        <code class="ml-1 bg-white px-1.5 py-0.5 rounded border border-indigo-200">{golden_answer}</code>
+        <code class="ml-1 bg-white px-1.5 py-0.5 rounded border border-indigo-200">{answer_4b}</code>
+        <code class="ml-1 bg-white px-1.5 py-0.5 rounded border border-indigo-200">{answer_8b}</code>
+        <span class="ml-3 text-indigo-600">— ต้องมี <code>SCORE_4B:</code> และ <code>SCORE_8B:</code> ใน output format</span>
+      </div>
+      <!-- Textarea -->
+      <div class="flex-1 overflow-hidden p-4">
+        <textarea id="promptTextarea"
+          class="w-full h-full resize-none font-mono text-xs text-gray-700 bg-gray-50 border border-gray-200 rounded-xl p-4 focus:outline-none focus:ring-2 focus:ring-indigo-300 leading-relaxed custom-scrollbar"
+          placeholder="พิมพ์ prompt template..."></textarea>
+      </div>
+      <!-- Modal Footer -->
+      <div class="px-6 py-4 border-t border-gray-100 flex items-center justify-between gap-3">
+        <button onclick="resetPromptToDefault()"
+          class="px-4 py-2 rounded-lg bg-red-50 border border-red-200 text-red-600 text-xs font-semibold hover:bg-red-100 transition-all">
+          🔄 รีเซ็ตค่าเริ่มต้น
+        </button>
+        <div class="flex items-center gap-2">
+          <button id="savePromptBtn" onclick="savePromptChanges()"
+            class="px-5 py-2 rounded-lg bg-green-50 border border-green-200 text-green-700 text-xs font-semibold hover:bg-green-100 transition-all">
+            💾 บันทึก
+          </button>
+          <button onclick="closePromptModal()"
+            class="px-5 py-2 rounded-lg bg-indigo-50 text-indigo-700 text-xs font-semibold hover:bg-indigo-100 transition-all">ปิด</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+
+</html>

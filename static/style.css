@@ -1,0 +1,426 @@
+/* ============================================
+   RAG Embedding Comparison — Light Mode UI
+   ============================================ */
+
+/* ===== Vertical Timeline (sidebar) ===== */
+.tl-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  transition: all 0.3s;
+}
+
+.tl-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #94a3b8;
+  background: #f1f5f9;
+  border: 2px solid #e2e8f0;
+  transition: all 0.4s;
+  flex-shrink: 0;
+}
+
+.tl-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.tl-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  transition: color 0.3s;
+}
+
+.tl-status {
+  font-size: 10px;
+  color: #94a3b8;
+  transition: color 0.3s;
+}
+
+/* Active */
+.tl-step.active {
+  background: #eef2ff;
+}
+
+.tl-step.active .tl-dot {
+  background: #e0e7ff;
+  border-color: #6366f1;
+  color: #6366f1;
+  box-shadow: 0 0 12px rgba(99, 102, 241, 0.2);
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+.tl-step.active .tl-name {
+  color: #4338ca;
+}
+
+.tl-step.active .tl-status {
+  color: #6366f1;
+}
+
+/* Done */
+.tl-step.done {
+  background: #f0fdf4;
+}
+
+.tl-step.done .tl-dot {
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+  border-color: #22c55e;
+  color: #fff;
+  font-size: 0;
+}
+
+.tl-step.done .tl-dot::after {
+  content: '✓';
+  font-size: 13px;
+}
+
+.tl-step.done .tl-name {
+  color: #15803d;
+}
+
+.tl-step.done .tl-status {
+  color: #22c55e;
+}
+
+/* Error */
+.tl-step.error {
+  background: #fef2f2;
+}
+
+.tl-step.error .tl-dot {
+  background: #fee2e2;
+  border-color: #ef4444;
+  color: #ef4444;
+}
+
+.tl-step.error .tl-name {
+  color: #dc2626;
+}
+
+/* Skip */
+.tl-step.skip {
+  opacity: 0.5;
+}
+
+.tl-step.skip .tl-dot {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+  border-style: dashed;
+}
+
+@keyframes pulse-dot {
+
+  0%,
+  100% {
+    box-shadow: 0 0 8px rgba(99, 102, 241, 0.15);
+  }
+
+  50% {
+    box-shadow: 0 0 18px rgba(99, 102, 241, 0.3);
+  }
+}
+
+/* ===== Tab Bar ===== */
+.tab-btn {
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #94a3b8;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+  cursor: pointer;
+  background: none;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  white-space: nowrap;
+}
+
+.tab-btn:hover {
+  color: #475569;
+}
+
+.tab-btn.active {
+  color: #4338ca;
+  border-bottom-color: #6366f1;
+}
+
+.tab-content {
+  display: none;
+}
+
+.tab-content.active {
+  display: block;
+}
+
+/* ===== Gradient Button ===== */
+.btn-gradient {
+  padding: 10px 20px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #6366f1, #a855f7, #ec4899);
+  background-size: 200% 200%;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  transition: all 0.3s;
+  animation: gradient-shift 4s ease infinite;
+}
+
+.btn-gradient:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 24px rgba(99, 102, 241, 0.25);
+}
+
+.btn-gradient:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+@keyframes gradient-shift {
+
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+/* ===== Scrollbar ===== */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* ===== Question Block (Modal) ===== */
+.question-block {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 12px;
+  transition: border-color 0.2s;
+}
+
+.question-block:focus-within {
+  border-color: #6366f1;
+}
+
+.question-block:hover {
+  border-color: #cbd5e1;
+}
+
+.question-block label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.question-block .q-label {
+  color: #0891b2;
+}
+
+.question-block .a-label {
+  color: #16a34a;
+  margin-top: 6px;
+}
+
+.question-block textarea {
+  width: 100%;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  color: #334155;
+  padding: 6px 8px;
+  font-size: 11px;
+  font-family: 'Inter', system-ui, sans-serif;
+  resize: vertical;
+  min-height: 40px;
+  line-height: 1.5;
+  transition: border-color 0.3s;
+}
+
+.question-block textarea:focus {
+  outline: none;
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.1);
+}
+
+/* ===== Result Cards ===== */
+.result-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 16px;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.result-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.model-answer {
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  border-left: 3px solid #e2e8f0;
+}
+
+.model-answer.m4b {
+  border-left-color: #6366f1;
+}
+
+.model-answer.m8b {
+  border-left-color: #a855f7;
+}
+
+.model-answer.golden {
+  border-left-color: #22c55e;
+}
+
+.model-answer.eval {
+  border-left-color: #f59e0b;
+}
+
+.model-answer .label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.model-answer.m4b .label {
+  color: #6366f1;
+}
+
+.model-answer.m8b .label {
+  color: #9333ea;
+}
+
+.model-answer.golden .label {
+  color: #16a34a;
+}
+
+.model-answer.eval .label {
+  color: #d97706;
+}
+
+/* ===== Score Box ===== */
+.score-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+/* ===== WER Table ===== */
+.wer-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.wer-table th,
+.wer-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  text-align: left;
+}
+
+.wer-table th {
+  background: #f8fafc;
+  color: #64748b;
+  font-weight: 600;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.wer-bar {
+  height: 5px;
+  border-radius: 3px;
+  background: #f1f5f9;
+  overflow: hidden;
+  min-width: 80px;
+}
+
+.wer-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.6s ease;
+}
+
+/* ===== Stat Item ===== */
+.stat-item {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 14px;
+  text-align: center;
+}
+
+.stat-item .value {
+  font-size: 26px;
+  font-weight: 800;
+}
+
+.stat-item .stat-label {
+  font-size: 10px;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+/* ===== Spinner ===== */
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ===== Drag Over ===== */
+.dragover {
+  border-color: #6366f1 !important;
+  background: #eef2ff !important;
+}
